@@ -1,0 +1,16 @@
+# Node
+node_modules/
+dist/
+
+# Java
+target/
+*.jar
+
+# IDE
+.idea/
+.vscode/
+
+# Environment
+.env
+
+管理docker.txt
