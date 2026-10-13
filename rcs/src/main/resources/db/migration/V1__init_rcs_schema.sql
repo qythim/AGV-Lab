@@ -10,6 +10,7 @@ CREATE TABLE rcs_map (
     height NUMERIC(10,2) CHECK (height > 0),
     origin_x NUMERIC(10,2) NOT NULL DEFAULT 0,
     origin_y NUMERIC(10,2) NOT NULL DEFAULT 0,
+    context TEXT, -- 地圖擴充設定長文本 (PostgreSQL 中 TEXT 型態最大可儲存 1GB，足以容納完整 JSON)
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

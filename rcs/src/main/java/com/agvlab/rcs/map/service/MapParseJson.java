@@ -1,21 +1,22 @@
 package com.agvlab.rcs.map.service;
 
 import com.agvlab.rcs.map.dto.MapDataDto;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
 /**
  * 地圖解析與序列化服務：
  * 1. 將地圖 JSON 字串解析為 Java 實體資料傳輸物件 (MapDataDto)。
  * 2. 將地圖資料物件序列化為格式化 JSON 字串，以供前端 (Three.js) 渲染使用。
+ * (適配 Spring Boot 4.1.1 內建之 Jackson 3 規格)
  */
 @Service
-public class MapParse {
+public class MapParseJson {
 
     private final ObjectMapper objectMapper;
 
-    public MapParse(ObjectMapper objectMapper) {
+    public MapParseJson(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
@@ -28,7 +29,7 @@ public class MapParse {
     public MapDataDto parseJson(String jsonString) {
         try {
             return objectMapper.readValue(jsonString, MapDataDto.class);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new RuntimeException("地圖 JSON 解析失敗: " + e.getMessage(), e);
         }
     }
@@ -42,7 +43,7 @@ public class MapParse {
     public String toJson(MapDataDto mapData) {
         try {
             return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(mapData);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new RuntimeException("地圖資料轉為 JSON 失敗: " + e.getMessage(), e);
         }
     }

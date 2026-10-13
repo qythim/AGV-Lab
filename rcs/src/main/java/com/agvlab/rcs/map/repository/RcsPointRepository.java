@@ -1,0 +1,25 @@
+package com.agvlab.rcs.map.repository;
+
+import com.agvlab.rcs.map.entity.RcsPoint;
+import com.agvlab.rcs.map.entity.RcsPointId;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+import java.util.List;
+
+/**
+ * 地圖導航路徑點資料存取介面 (Repository)
+ */
+@Repository
+public interface RcsPointRepository extends JpaRepository<RcsPoint, RcsPointId> {
+
+    /**
+     * 依據地圖代碼查詢所有路徑拓撲點清單
+     *
+     * @param mapCode 地圖代碼 (如 FACTORY_01)
+     * @return 該地圖下的所有路徑點清單
+     */
+    @Query("SELECT p FROM RcsPoint p WHERE p.id.mapCode = :mapCode")
+    List<RcsPoint> findByMapCode(@Param("mapCode") String mapCode);
+}

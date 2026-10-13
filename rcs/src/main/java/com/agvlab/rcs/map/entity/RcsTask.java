@@ -1,4 +1,4 @@
-package com.agvlab.rcs.entity;
+package com.agvlab.rcs.map.entity;
 
 import jakarta.persistence.*;
 import java.time.OffsetDateTime;

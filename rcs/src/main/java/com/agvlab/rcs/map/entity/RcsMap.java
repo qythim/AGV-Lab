@@ -1,4 +1,4 @@
-package com.agvlab.rcs.entity;
+package com.agvlab.rcs.map.entity;
 
 import jakarta.persistence.*;
 import java.math.BigDecimal;
@@ -31,6 +31,12 @@ public class RcsMap extends BaseAuditEntity {
 
     @Column(name = "origin_y", precision = 10, scale = 2, nullable = false)
     private BigDecimal originY = BigDecimal.ZERO;
+
+    /**
+     * 地圖上下文擴充資訊 (長文本格式，儲存自訂配置或附加資訊)
+     */
+    @Column(name = "context", columnDefinition = "text")
+    private String context;
 
     public RcsMap() {}
 
@@ -101,5 +107,23 @@ public class RcsMap extends BaseAuditEntity {
 
     public void setOriginY(BigDecimal originY) {
         this.originY = originY;
+    }
+
+    /**
+     * 取得地圖上下文長文本資訊
+     *
+     * @return 上下文字串
+     */
+    public String getContext() {
+        return context;
+    }
+
+    /**
+     * 設定地圖上下文長文本資訊
+     *
+     * @param context 上下文字串
+     */
+    public void setContext(String context) {
+        this.context = context;
     }
 }
