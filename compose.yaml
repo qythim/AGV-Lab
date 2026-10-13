@@ -1,0 +1,47 @@
+
+name: Agv-Lab
+
+services:
+  java21:
+   
+    image: eclipse-temurin:21-jdk
+    container_name: AL-java21
+    command: ["tail", "-f", "/dev/null"]
+
+  node24:
+    image: node:24
+    container_name: AL-node24
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command: ["tail", "-f", "/dev/null"]
+
+  postgres:
+    image: postgres:18.6
+    container_name: AL-postgresSQL
+    environment:
+      POSTGRES_USER: agv
+      POSTGRES_PASSWORD: dev_password
+      POSTGRES_DB: rcs_db 
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agv -d agv_lab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8.2
+    container_name: AL-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  postgres_data:
+  redis_data:
