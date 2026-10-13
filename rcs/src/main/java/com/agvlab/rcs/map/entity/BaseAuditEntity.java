@@ -1,4 +1,4 @@
-package com.agvlab.rcs.entity;
+package com.agvlab.rcs.map.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.MappedSuperclass;
@@ -7,7 +7,7 @@ import jakarta.persistence.PreUpdate;
 import java.time.OffsetDateTime;
 
 /**
- * Lớp cha dùng chung cho các Entity cần truy vết thời gian tạo và cập nhật.
+ * 審計基礎實體類別：提供自動建立時間與更新時間追蹤。
  */
 @MappedSuperclass
 public abstract class BaseAuditEntity {

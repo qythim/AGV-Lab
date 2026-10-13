@@ -28,7 +28,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agv -d agv_lab"]
+      test: ["CMD-SHELL", "pg_isready -U agv -d rcs_db"]
       interval: 10s
       timeout: 5s
       retries: 5
