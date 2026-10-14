@@ -25,6 +25,10 @@ public class RcsPoint extends BaseAuditEntity {
     @Column(name = "heading_angle", nullable = false)
     private Double headingAngle = 0.0;
 
+    /**
+     * 相鄰導航點代碼清單 (對應 PostgreSQL JSONB 型態，使用 Hibernate SqlTypes.JSON 進行型態對應)
+     */
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.JSON)
     @Column(name = "neighbors", columnDefinition = "jsonb", nullable = false)
     private String neighbors = "[]";
 
@@ -62,8 +66,30 @@ public class RcsPoint extends BaseAuditEntity {
         return id != null ? id.getMapCode() : null;
     }
 
+    /**
+     * 便捷設定地圖代碼 (自動同步至複合主鍵 id)
+     */
+    @Transient
+    public void setMapCode(String mapCode) {
+        if (this.id == null) {
+            this.id = new RcsPointId();
+        }
+        this.id.setMapCode(mapCode);
+    }
+
     public String getPointCode() {
         return id != null ? id.getPointCode() : null;
+    }
+
+    /**
+     * 便捷設定點位代碼 (自動同步至複合主鍵 id)
+     */
+    @Transient
+    public void setPointCode(String pointCode) {
+        if (this.id == null) {
+            this.id = new RcsPointId();
+        }
+        this.id.setPointCode(pointCode);
     }
 
     public Double getX() {

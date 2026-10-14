@@ -91,4 +91,79 @@ public class MapService {
         MapDataDto mapData = getActiveMapData();
         return MapParseJson.toJson(mapData);
     }
+
+    /**
+     * 儲存或更新完整地圖資料 (包含地圖主檔、所有路徑點、所有 3D 物件)
+     * 使用 @Transactional 確保原子性：任一步驟失敗即全面自動回滾 (Rollback)
+     *
+     * @param mapData 待儲存的 MapDataDto 封裝物件
+     * @return 儲存完成後的 MapDataDto 封裝物件
+     */
+    @Transactional
+    public MapDataDto saveMapData(MapDataDto mapData) {
+        if (mapData == null || mapData.getMap() == null) {
+            throw new IllegalArgumentException("地圖資料或地圖主檔物件不可為空");
+        }
+
+        RcsMap map = mapData.getMap();
+        String mapCode = map.getMapCode();
+        if (mapCode == null || mapCode.trim().isEmpty()) {
+            throw new IllegalArgumentException("地圖代碼 (mapCode) 不可為空");
+        }
+
+        // 1. 若此地圖設定為啟用 (is_active = true)，先將系統內既有的啟用地圖改為停用，避免違反唯一索引限制
+        if (Boolean.TRUE.equals(map.getIsActive())) {
+            mapRepository.findByIsActiveTrue().ifPresent(existingActive -> {
+                if (!existingActive.getMapCode().equals(mapCode)) {
+                    existingActive.setIsActive(false);
+                    mapRepository.save(existingActive);
+                }
+            });
+        }
+
+        // 2. 儲存地圖基本主檔資訊
+        RcsMap savedMap = mapRepository.save(map);
+
+        // 3. 清理舊路徑點並批次儲存新路徑點清單
+        pointRepository.deleteByMapCode(mapCode);
+        List<RcsPoint> savedPoints = List.of();
+        if (mapData.getPoints() != null && !mapData.getPoints().isEmpty()) {
+            for (RcsPoint pt : mapData.getPoints()) {
+                if (pt.getId() == null) {
+                    pt.setId(new com.agvlab.rcs.map.entity.RcsPointId());
+                }
+                pt.getId().setMapCode(mapCode);
+            }
+            savedPoints = pointRepository.saveAll(mapData.getPoints());
+        }
+
+        // 4. 清理舊 3D 物件並批次儲存新 3D 物件清單
+        mapObjectRepository.deleteByMapCode(mapCode);
+        List<RcsMapObject> savedObjects = List.of();
+        if (mapData.getObjects() != null && !mapData.getObjects().isEmpty()) {
+            for (RcsMapObject obj : mapData.getObjects()) {
+                obj.setMapCode(mapCode);
+                // 重設 ID 為 null，交由資料庫自增序列 (BIGSERIAL) 產生全新主鍵
+                obj.setId(null);
+            }
+            savedObjects = mapObjectRepository.saveAll(mapData.getObjects());
+        }
+
+        return new MapDataDto(savedMap, savedPoints, savedObjects);
+    }
+
+    /**
+     * 從原始 JSON 字串直接匯入並儲存完整地圖資料
+     *
+     * @param jsonString 地圖原始 JSON 字串 (來自檔案或請求主體)
+     * @return 儲存後的 MapDataDto 封裝物件
+     */
+    @Transactional
+    public MapDataDto importMapFromJson(String jsonString) {
+        if (jsonString == null || jsonString.trim().isEmpty()) {
+            throw new IllegalArgumentException("匯入的地圖 JSON 字串不可為空");
+        }
+        MapDataDto mapData = MapParseJson.parseJson(jsonString);
+        return saveMapData(mapData);
+    }
 }

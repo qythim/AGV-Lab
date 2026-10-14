@@ -18,4 +18,13 @@ public interface RcsMapObjectRepository extends JpaRepository<RcsMapObject, Long
      * @return 該地圖下的所有 3D 物件清單
      */
     List<RcsMapObject> findByMapCode(String mapCode);
+
+    /**
+     * 依據地圖代碼批次刪除該地圖下的所有 3D 物件 (用於地圖覆寫與匯入)
+     *
+     * @param mapCode 地圖代碼
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("DELETE FROM RcsMapObject o WHERE o.mapCode = :mapCode")
+    void deleteByMapCode(@org.springframework.data.repository.query.Param("mapCode") String mapCode);
 }

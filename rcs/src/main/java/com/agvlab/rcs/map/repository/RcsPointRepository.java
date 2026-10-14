@@ -22,4 +22,13 @@ public interface RcsPointRepository extends JpaRepository<RcsPoint, RcsPointId> 
      */
     @Query("SELECT p FROM RcsPoint p WHERE p.id.mapCode = :mapCode")
     List<RcsPoint> findByMapCode(@Param("mapCode") String mapCode);
+
+    /**
+     * 依據地圖代碼批次刪除該地圖下的所有既有點位 (用於地圖覆寫與匯入)
+     *
+     * @param mapCode 地圖代碼
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM RcsPoint p WHERE p.id.mapCode = :mapCode")
+    void deleteByMapCode(@Param("mapCode") String mapCode);
 }

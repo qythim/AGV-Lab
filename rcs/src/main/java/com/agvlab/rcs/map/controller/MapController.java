@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
  * 地圖 RESTful API 控制器 (MapController)：
  * 提供 HTTP 介面供瀏覽器或前端 (Three.js) 直接查詢完整地圖 JSON 資料。
  */
+@CrossOrigin(origins = "*")
 @RestController
 @RequestMapping("/api/maps")
 public class MapController {
@@ -40,5 +41,29 @@ public class MapController {
     @GetMapping(value = "/active", produces = MediaType.APPLICATION_JSON_VALUE)
     public MapDataDto getActiveMap() {
         return mapService.getActiveMapData();
+    }
+
+    /**
+     * 3. 儲存或更新完整地圖 (接收標準 JSON 物件)
+     * 供前端 Three.js 編輯器點擊「儲存地圖」時發送使用
+     *
+     * @param mapData 地圖傳輸物件 (包含 map, points, objects)
+     * @return 儲存成功後的完整地圖資料
+     */
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public MapDataDto saveMap(@RequestBody MapDataDto mapData) {
+        return mapService.saveMapData(mapData);
+    }
+
+    /**
+     * 4. 原始 JSON 字串直接匯入地圖
+     * 測試網址：POST http://localhost:8080/api/maps/import
+     *
+     * @param jsonString 原始 JSON 地圖文字內容
+     * @return 匯入成功後的完整地圖資料
+     */
+    @PostMapping(value = "/import", consumes = {MediaType.APPLICATION_JSON_VALUE, MediaType.TEXT_PLAIN_VALUE}, produces = MediaType.APPLICATION_JSON_VALUE)
+    public MapDataDto importMap(@RequestBody String jsonString) {
+        return mapService.importMapFromJson(jsonString);
     }
 }
