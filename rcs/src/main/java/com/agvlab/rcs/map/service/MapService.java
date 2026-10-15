@@ -35,13 +35,16 @@ public class MapService {
     }
 
     /**
-     * 取得系統內所有地圖清單 (供前端 MapManagementPage 表格列表與統計展示)
+     * 取得系統內所有完整地圖資料清單 (包含地圖主檔、所有路徑點、所有 3D 物件，供前端 MapManagementPage 表格列表與統計展示)
      *
-     * @return 所有地圖主檔資料清單
+     * @return 所有地圖 MapDataDto 封裝清單
      */
     @Transactional(readOnly = true)
-    public List<RcsMap> getAllMaps() {
-        return mapRepository.findAll();
+    public List<MapDataDto> getAllMaps() {
+        List<RcsMap> maps = mapRepository.findAll();
+        return maps.stream()
+                .map(map -> getMapData(map.getMapCode()))
+                .toList();
     }
 
     /**

@@ -23,13 +23,13 @@ public class MapController {
     }
 
     /**
-     * 1. 取得系統內所有地圖清單 (供前端 MapManagementPage 表格列表與統計展示)
+     * 1. 取得系統內所有完整地圖資料清單 (包含路徑點與 3D 物件，供前端 MapManagementPage 表格列表與統計展示)
      * 瀏覽器測試網址：http://localhost:8080/api/maps
      *
-     * @return 所有地圖主檔資料清單
+     * @return 所有地圖 MapDataDto 封裝清單
      */
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
-    public List<RcsMap> getAllMaps() {
+    public List<MapDataDto> getAllMaps() {
         return mapService.getAllMaps();
     }
 
