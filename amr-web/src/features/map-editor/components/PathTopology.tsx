@@ -13,6 +13,8 @@ import type { ScenePoint, SceneEdge } from '../types/map3d'
 interface PathTopologyProps {
   points: ScenePoint[]
   edges: SceneEdge[]
+  selectedPointCode?: string | null
+  onSelectPoint?: (code: string) => void
 }
 
 /** 各功能類型之路徑點顏色定義 */
@@ -32,7 +34,12 @@ const POINT_RADIUS = 0.18
 /** 路徑連線的垂直高度 (略高於地板防止 Z-fighting) */
 const EDGE_Y = 0.04
 
-export default function PathTopology({ points, edges }: PathTopologyProps) {
+export default function PathTopology({
+  points,
+  edges,
+  selectedPointCode,
+  onSelectPoint,
+}: PathTopologyProps) {
   // ── 路徑連線幾何體 (LineSegments) ──────────────────────────────────────────
   // 將所有邊一次性合併到單一 BufferGeometry 以最佳化渲染效能
   const lineGeometry = useMemo(() => {
@@ -57,14 +64,26 @@ export default function PathTopology({ points, edges }: PathTopologyProps) {
 
       {/* 各路徑點標記 */}
       {points.map((point) => {
+        const isSelected = selectedPointCode === point.code
         const color = point.isDisabled
           ? DISABLED_COLOR
           : (POINT_COLORS[point.type] ?? POINT_COLORS.NORMAL)
 
         return (
-          <group key={point.code} position={point.position}>
+          <group
+            key={point.code}
+            position={point.position}
+            onClick={(e) => {
+              e.stopPropagation()
+              onSelectPoint?.(point.code)
+            }}
+          >
             {/* 圓盤底座 */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]}>
+            <mesh
+              rotation={[-Math.PI / 2, 0, 0]}
+              onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer' }}
+              onPointerOut={() => { document.body.style.cursor = 'default' }}
+            >
               <circleGeometry args={[POINT_RADIUS, 16]} />
               <meshBasicMaterial color={color} />
             </mesh>
@@ -74,6 +93,24 @@ export default function PathTopology({ points, edges }: PathTopologyProps) {
               <ringGeometry args={[POINT_RADIUS, POINT_RADIUS + 0.05, 16]} />
               <meshBasicMaterial color="#ffffff" transparent opacity={0.6} />
             </mesh>
+
+            {/* 隱形擴大點擊熱區 (半徑 0.5m 圓柱，確保任何視角皆能輕鬆點中) */}
+            <mesh
+              visible={false}
+              position={[0, 0.2, 0]}
+              onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer' }}
+              onPointerOut={() => { document.body.style.cursor = 'default' }}
+            >
+              <cylinderGeometry args={[0.5, 0.5, 0.4, 12]} />
+            </mesh>
+
+            {/* 選取光環 (當前被點選時顯示亮藍色外圈) */}
+            {isSelected && (
+              <mesh rotation={[-Math.PI / 2, 0, 0]}>
+                <ringGeometry args={[POINT_RADIUS + 0.08, POINT_RADIUS + 0.18, 24]} />
+                <meshBasicMaterial color="#38bdf8" transparent opacity={0.9} />
+              </mesh>
+            )}
 
             {/* 充電站或工作站加入點光源強調 */}
             {(point.type === 'CHARGER' || point.type === 'STATION') && (

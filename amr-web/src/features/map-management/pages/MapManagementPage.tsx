@@ -151,7 +151,7 @@ function buildColumns(
       width: 80,
       align: 'center',
       render: (_: unknown, record: MapDataDto) => (
-        <Text style={{ color: '#60a5fa' }}>{record.points.length}</Text>
+        <Text style={{ color: '#60a5fa' }}>{record.points?.length ?? 0}</Text>
       ),
     },
     {
@@ -160,7 +160,7 @@ function buildColumns(
       width: 90,
       align: 'center',
       render: (_: unknown, record: MapDataDto) => (
-        <Text style={{ color: '#a78bfa' }}>{record.objects.length}</Text>
+        <Text style={{ color: '#a78bfa' }}>{record.objects?.length ?? 0}</Text>
       ),
     },
     {
@@ -550,8 +550,8 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
                 { key: 'status', label: '狀態', children: selectedMap.map.isActive ? <Tag color="success">啟用中</Tag> : <Tag color="default">待機</Tag> },
                 { key: 'width', label: '場地寬度', children: `${selectedMap.map.width} 公尺` },
                 { key: 'height', label: '場地長度', children: `${selectedMap.map.height} 公尺` },
-                { key: 'points', label: '路徑點數', children: `${selectedMap.points.length} 個` },
-                { key: 'objects', label: '場景物件', children: `${selectedMap.objects.length} 個` },
+                { key: 'points', label: '路徑點數', children: `${selectedMap.points?.length ?? 0} 個` },
+                { key: 'objects', label: '場景物件', children: `${selectedMap.objects?.length ?? 0} 個` },
               ]}
             />
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
