@@ -1,0 +1,87 @@
+// ============================================================================
+// 檔案名稱：PathTopology.tsx
+// 模組說明：AGV 拓撲路徑渲染元件
+//           功能：繪製路徑點 (Node) 與路徑連線 (Edge)
+//           點位依功能類型顯示不同顏色以利辨識
+// ============================================================================
+
+import { useMemo, useRef } from 'react'
+import * as THREE from 'three'
+import type { ScenePoint, SceneEdge } from '../types/map3d'
+
+/** 路徑拓撲元件屬性 */
+interface PathTopologyProps {
+  points: ScenePoint[]
+  edges: SceneEdge[]
+}
+
+/** 各功能類型之路徑點顏色定義 */
+const POINT_COLORS: Record<string, string> = {
+  NORMAL:  '#64748b', // 一般通道點：灰藍色
+  RACK:    '#3b82f6', // 貨架點：藍色
+  STATION: '#FF8C00', // 工作站點：主題橙色
+  CHARGER: '#10b981', // 充電點：綠色
+}
+
+/** 停用點位的顯示顏色 */
+const DISABLED_COLOR = '#ef4444'
+
+/** 路徑點圓盤半徑 */
+const POINT_RADIUS = 0.18
+
+/** 路徑連線的垂直高度 (略高於地板防止 Z-fighting) */
+const EDGE_Y = 0.04
+
+export default function PathTopology({ points, edges }: PathTopologyProps) {
+  // ── 路徑連線幾何體 (LineSegments) ──────────────────────────────────────────
+  // 將所有邊一次性合併到單一 BufferGeometry 以最佳化渲染效能
+  const lineGeometry = useMemo(() => {
+    const positions: number[] = []
+    for (const edge of edges) {
+      positions.push(edge.from[0], EDGE_Y, edge.from[2])
+      positions.push(edge.to[0],   EDGE_Y, edge.to[2])
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    return geo
+  }, [edges])
+
+  const lineMaterialRef = useRef(
+    new THREE.LineBasicMaterial({ color: '#1e40af', linewidth: 1 })
+  )
+
+  return (
+    <group>
+      {/* 路徑連線群 (一次繪製所有邊，效能最佳) */}
+      <lineSegments geometry={lineGeometry} material={lineMaterialRef.current} />
+
+      {/* 各路徑點標記 */}
+      {points.map((point) => {
+        const color = point.isDisabled
+          ? DISABLED_COLOR
+          : (POINT_COLORS[point.type] ?? POINT_COLORS.NORMAL)
+
+        return (
+          <group key={point.code} position={point.position}>
+            {/* 圓盤底座 */}
+            <mesh rotation={[-Math.PI / 2, 0, 0]}>
+              <circleGeometry args={[POINT_RADIUS, 16]} />
+              <meshBasicMaterial color={color} />
+            </mesh>
+
+            {/* 外框環 (增加辨識度) */}
+            <mesh rotation={[-Math.PI / 2, 0, point.headingRad]}>
+              <ringGeometry args={[POINT_RADIUS, POINT_RADIUS + 0.05, 16]} />
+              <meshBasicMaterial color="#ffffff" transparent opacity={0.6} />
+            </mesh>
+
+            {/* 充電站或工作站加入點光源強調 */}
+            {(point.type === 'CHARGER' || point.type === 'STATION') && (
+              <pointLight color={color} intensity={4} distance={3} position={[0, 0.5, 0]} />
+            )}
+          </group>
+        )
+      })}
+    </group>
+  )
+}
