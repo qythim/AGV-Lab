@@ -35,6 +35,16 @@ public class MapService {
     }
 
     /**
+     * 取得系統內所有地圖清單 (供前端 MapManagementPage 表格列表與統計展示)
+     *
+     * @return 所有地圖主檔資料清單
+     */
+    @Transactional(readOnly = true)
+    public List<RcsMap> getAllMaps() {
+        return mapRepository.findAll();
+    }
+
+    /**
      * 依據地圖代碼取得完整的靜態地圖資料物件 (MapDataDto)
      *
      * @param mapCode 地圖代碼 (如 FACTORY_01)

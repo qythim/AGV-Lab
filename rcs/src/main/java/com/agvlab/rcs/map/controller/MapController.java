@@ -1,9 +1,11 @@
 package com.agvlab.rcs.map.controller;
 
 import com.agvlab.rcs.map.dto.MapDataDto;
+import com.agvlab.rcs.map.entity.RcsMap;
 import com.agvlab.rcs.map.service.MapService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import java.util.List;
 
 /**
  * 地圖 RESTful API 控制器 (MapController)：
@@ -21,7 +23,18 @@ public class MapController {
     }
 
     /**
-     * 1. 依據地圖代碼取得地圖 JSON 資料
+     * 1. 取得系統內所有地圖清單 (供前端 MapManagementPage 表格列表與統計展示)
+     * 瀏覽器測試網址：http://localhost:8080/api/maps
+     *
+     * @return 所有地圖主檔資料清單
+     */
+    @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<RcsMap> getAllMaps() {
+        return mapService.getAllMaps();
+    }
+
+    /**
+     * 2. 依據地圖代碼取得地圖 JSON 資料
      * 瀏覽器測試網址：http://localhost:8080/api/maps/FACTORY_01
      *
      * @param mapCode 地圖代碼
