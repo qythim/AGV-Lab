@@ -10,9 +10,9 @@
 import { Suspense, useEffect, useState, useCallback, useMemo } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
-import { message } from 'antd'
+import { useNotify } from '../../../shared/hooks/useNotify'
 
-import { fetchActiveMap, fetchMapByCode, saveMap, type DataSource } from '../../map-management/api/mapApi'
+import { fetchActiveMap, fetchMapByCode, saveMap } from '../../map-management/api/mapApi'
 import type { MapDataDto, MapObjectType } from '../../map-management/types/mapDto'
 import { mapDtoToSceneData } from '../utils/mapCoordinateMapper'
 import { sceneDataToMapDto } from '../utils/sceneDataToMapDto'
@@ -33,11 +33,11 @@ import PathTopology from '../components/PathTopology'
 // ─────────────────────────────────────────────────────────────────────────────
 interface SceneHudProps {
   sceneData: SceneData | null
-  source: DataSource | null
+  error: string | null
   loading: boolean
 }
 
-function SceneHud({ sceneData, source, loading }: SceneHudProps) {
+function SceneHud({ sceneData, error, loading }: SceneHudProps) {
   if (loading) {
     return (
       <div style={{
@@ -47,6 +47,13 @@ function SceneHud({ sceneData, source, loading }: SceneHudProps) {
         fontSize: 13, fontFamily: 'monospace',
       }}>
         ⏳ 正在載入地圖資料...
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div role="alert" style={{ position: 'absolute', bottom: 16, left: 20, zIndex: 10, background: '#05102b', color: '#f87171', padding: 16 }}>
+        {error}
       </div>
     )
   }
@@ -66,10 +73,7 @@ function SceneHud({ sceneData, source, loading }: SceneHudProps) {
       <div>📐 尺寸：{sceneData.floorWidth} × {sceneData.floorDepth} m</div>
       <div>📍 點位：{sceneData.points.length} 個 | 📦 物件：{sceneData.objects.length} 個</div>
       <div style={{ fontSize: 11, marginTop: 2 }}>
-        {source === 'api'
-          ? <span style={{ color: '#10b981' }}>● RCS 後端資料 (即時同步)</span>
-          : <span style={{ color: '#f59e0b' }}>⚠ 本地模擬資料 (離線展示)</span>
-        }
+        <span style={{ color: '#10b981' }}>● RCS 後端資料</span>
       </div>
     </div>
   )
@@ -241,9 +245,10 @@ interface FactorySceneProps {
 }
 
 export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
+  const notify = useNotify()
   const [sceneData, setSceneData] = useState<SceneData | null>(null)
   const [rawDto, setRawDto] = useState<MapDataDto | undefined>()
-  const [source, setSource] = useState<DataSource | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [isDraggingGizmo, setIsDraggingGizmo] = useState(false)
@@ -265,14 +270,22 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
 
   // 載入地圖資料
   useEffect(() => {
+    let cancelled = false
     const loader = mapCode ? fetchMapByCode(mapCode) : fetchActiveMap()
-    loader.then(({ data, source }) => {
+    loader.then((data) => {
+      if (cancelled) return
       setRawDto(data)
       setSceneData(mapDtoToSceneData(data))
-      setSource(source)
-      setLoading(false)
       markClean()
+    }).catch(() => {
+      if (cancelled) return
+      setSceneData(null)
+      setRawDto(undefined)
+      setLoadError('無法載入地圖，請確認 RCS 後端及地圖資料後重新開啟。')
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
     })
+    return () => { cancelled = true }
   }, [mapCode, markClean])
 
   // 選取點位或物件時，自動切換至平移工具顯示 Gizmo
@@ -282,9 +295,9 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
       if (currentTool === 'select') {
         setCurrentTool('translate')
       }
-      message.info(`已選取 ${target.type === 'POINT' ? '路徑點' : '3D 物件'}：${target.id}，變形軸已就緒`)
+      notify.info(`已選取 ${target.type === 'POINT' ? '路徑點' : '3D 物件'}：${target.id}，變形軸已就緒`)
     },
-    [currentTool, setCurrentTool, setSelectedTarget]
+    [currentTool, setCurrentTool, setSelectedTarget, notify]
   )
 
   // 點擊路徑點 (處理連線邊或選取)
@@ -293,9 +306,9 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
       if (currentTool === 'connect-edge') {
         if (!pendingEdgeStart) {
           setPendingEdgeStart(code)
-          message.info(`🔗 已鎖定連線起點：${code}，請點擊第二個點完成連線`)
+          notify.info(`🔗 已鎖定連線起點：${code}，請點擊第二個點完成連線`)
         } else if (pendingEdgeStart === code) {
-          message.warning('⚠️ 起點與終點不能為同一個路徑點')
+          notify.warning('⚠️ 起點與終點不能為同一個路徑點')
         } else {
           // 建立連線邊
           setSceneData((prev) => {
@@ -314,12 +327,12 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
             )
 
             if (edgeExists) {
-              message.warning(`路徑 ${pendingEdgeStart} ↔ ${code} 已經存在`)
+              notify.warning(`路徑 ${pendingEdgeStart} ↔ ${code} 已經存在`)
               return prev
             }
 
             const newEdge: SceneEdge = { from: p1.position, to: p2.position }
-            message.success(`🎉 成功建立路徑連線：${pendingEdgeStart} ↔ ${code}`)
+            notify.success(`🎉 成功建立路徑連線：${pendingEdgeStart} ↔ ${code}`)
             return { ...prev, edges: [...prev.edges, newEdge] }
           })
           setPendingEdgeStart(null)
@@ -330,7 +343,7 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
 
       handleSelectTarget({ type: 'POINT', id: code })
     },
-    [currentTool, pendingEdgeStart, handleSelectTarget, markDirty]
+    [currentTool, pendingEdgeStart, handleSelectTarget, markDirty, notify]
   )
 
   // 點擊地面 (新增點位或取消選取)
@@ -357,7 +370,7 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
             isDisabled: false,
           }
 
-          message.success(`📍 成功在 [${snapX}, ${snapZ}] 新增路徑點：${newCode}`)
+          notify.success(`📍 成功在 [${snapX}, ${snapZ}] 新增路徑點：${newCode}`)
           setSelectedTarget({ type: 'POINT', id: newCode })
           setCurrentTool('translate')
           return { ...prev, points: [...prev.points, newPoint] }
@@ -371,7 +384,7 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
         clearSelection()
       }
     },
-    [currentTool, settings, setSelectedTarget, setCurrentTool, clearSelection, markDirty]
+    [currentTool, settings, setSelectedTarget, setCurrentTool, clearSelection, markDirty, notify]
   )
 
   // 新增 3D 環境物件
@@ -418,15 +431,15 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
       setSelectedTarget({ type: 'OBJECT', id: newId })
       setCurrentTool('translate')
       markDirty()
-      message.success(`📦 已在場景中央新增 ${type} 物件，並已開啟平移軸方便調整！`)
+      notify.success(`📦 已在場景中央新增 ${type} 物件，並已開啟平移軸方便調整！`)
     },
-    [sceneData, setSelectedTarget, setCurrentTool, markDirty]
+    [sceneData, setSelectedTarget, setCurrentTool, markDirty, notify]
   )
 
   // 刪除選取之目標
   const handleDeleteSelected = useCallback(() => {
     if (!selectedTarget) {
-      message.warning('💡 請先點選地圖上欲刪除的路徑點或 3D 物件！')
+      notify.warning('💡 請先點選地圖上欲刪除的路徑點或 3D 物件！')
       return
     }
 
@@ -448,15 +461,15 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
       })
       clearSelection()
       markDirty()
-      message.success(`🗑️ 已刪除路徑點 ${code}`)
+      notify.success(`🗑️ 已刪除路徑點 ${code}`)
     } else if (selectedTarget.type === 'OBJECT') {
       const id = selectedTarget.id as number
       setSceneData((prev) => (prev ? { ...prev, objects: prev.objects.filter((o) => o.id !== id) } : prev))
       clearSelection()
       markDirty()
-      message.success('🗑️ 已刪除選取的 3D 環境物件')
+      notify.success('🗑️ 已刪除選取的 3D 環境物件')
     }
-  }, [selectedTarget, clearSelection, markDirty])
+  }, [selectedTarget, clearSelection, markDirty, notify])
 
   // 更新路徑點坐標 (即時同步連線邊)
   const handleUpdatePointPosition = useCallback(
@@ -511,19 +524,19 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
       await saveMap(dto)
       setRawDto(dto)
       markClean()
-      message.success(`🎉 地圖「${sceneData.mapName}」變更已成功永久儲存至後端 RCS 資料庫！`)
+      notify.success(`🎉 地圖「${sceneData.mapName}」變更已成功永久儲存至後端 RCS 資料庫！`)
     } catch {
-      message.error('儲存失敗：後端連線中斷或伺服器回應異常')
+      notify.error('儲存失敗：後端連線中斷或伺服器回應異常')
     } finally {
       setIsSaving(false)
     }
-  }, [sceneData, rawDto, markClean])
+  }, [sceneData, rawDto, markClean, notify])
 
   // 切換網格吸附
   const handleToggleSnap = useCallback(() => {
     updateSettings({ snapToGrid: !settings.snapToGrid })
-    message.info(settings.snapToGrid ? '網格吸附已關閉' : '網格吸附已啟用 (步進 0.5m)')
-  }, [settings.snapToGrid, updateSettings])
+    notify.info(settings.snapToGrid ? '網格吸附已關閉' : '網格吸附已啟用 (步進 0.5m)')
+  }, [settings.snapToGrid, updateSettings, notify])
 
   // 計算初始相機位置
   const camDistance = useMemo(() => {
@@ -551,7 +564,7 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
       />
 
       {/* ── HUD 覆蓋層 (畫面左下角) ──────────────────────────────────── */}
-      <SceneHud sceneData={sceneData} source={source} loading={loading} />
+      <SceneHud sceneData={sceneData} error={loadError} loading={loading} />
 
       {/* ── Three.js Canvas ───────────────────────────────────────────── */}
       <Canvas

@@ -24,10 +24,10 @@ import {
   Tooltip,
   Typography,
   Upload,
-  message,
   theme,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import { useNotify } from '../../../shared/hooks/useNotify'
 import {
   ApartmentOutlined,
   BarChartOutlined,
@@ -43,7 +43,7 @@ import {
   RocketOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
-import { fetchMapList, saveMap } from '../api/mapApi'
+import { fetchMapList, saveMap, importMap} from '../api/mapApi'
 import type { MapDataDto } from '../types/mapDto'
 
 const { Header, Content, Footer, Sider } = Layout
@@ -59,32 +59,6 @@ const COLOR_BG_TABLE = '#071535'   // 表格背景
 const COLOR_BORDER = '#1e3a5f'   // 邊框色
 const COLOR_TEXT = '#e2e8f0'   // 主文字色
 const COLOR_TEXT_MUTE = '#94a3b8'   // 次要文字色
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 本地 Mock 地圖清單 (後端未上線時顯示示範資料)
-// ─────────────────────────────────────────────────────────────────────────────
-const MOCK_MAP_LIST: MapDataDto[] = [
-  {
-    map: { mapCode: 'FACTORY_01', mapName: 'A 廠區主倉庫', version: 5, isActive: true, width: 80, height: 60 },
-    points: Array(24).fill(null),
-    objects: Array(18).fill(null),
-  },
-  {
-    map: { mapCode: 'FACTORY_02', mapName: 'B 廠區冷鏈倉庫', version: 3, isActive: false, width: 50, height: 40 },
-    points: Array(16).fill(null),
-    objects: Array(12).fill(null),
-  },
-  {
-    map: { mapCode: 'STAGING_01', mapName: '暫存備用地圖 V1', version: 1, isActive: false, width: 30, height: 25 },
-    points: Array(8).fill(null),
-    objects: Array(5).fill(null),
-  },
-  {
-    map: { mapCode: 'TEST_LAB', mapName: '測試實驗室地圖', version: 2, isActive: false, width: 20, height: 15 },
-    points: Array(6).fill(null),
-    objects: Array(4).fill(null),
-  },
-]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 地圖清單表格欄位定義
@@ -214,8 +188,10 @@ interface MapManagementPageProps {
 }
 
 export default function MapManagementPage({ onOpenViewer }: MapManagementPageProps) {
+  const notify = useNotify()
   const [mapList, setMapList] = useState<MapDataDto[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [selectedMap, setSelectedMap] = useState<MapDataDto | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [menuKey, setMenuKey] = useState('maps')
@@ -223,12 +199,14 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
   // 載入地圖清單
   const loadMaps = useCallback(async () => {
     setLoading(true)
+    setLoadError(null)
     try {
       const list = await fetchMapList()
-      // 後端無資料時顯示示範清單
-      setMapList(list.length > 0 ? list : MOCK_MAP_LIST)
+
+      setMapList(list)
     } catch {
-      setMapList(MOCK_MAP_LIST)
+      setMapList([])
+      setLoadError('無法載入地圖，請確認 RCS 後端連線後重試。')
     } finally {
       setLoading(false)
     }
@@ -258,9 +236,9 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
           }))
           setMapList(updatedList)
           await saveMap({ ...record, map: { ...record.map, isActive: true } })
-          message.success(`已啟用「${record.map.mapName}」`)
+          notify.success(`已啟用「${record.map.mapName}」`)
         } catch {
-          message.warning('後端連線失敗，已更新本地狀態')
+          notify.warning('後端連線失敗，已更新本地狀態')
         }
       },
     })
@@ -268,27 +246,26 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
 
   // JSON 檔案匯入處理
   const handleImport = (file: File) => {
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      try {
-        const data: MapDataDto = JSON.parse(e.target?.result as string)
-        if (!data.map?.mapCode) throw new Error('格式錯誤')
-        setMapList(prev => {
-          const exists = prev.findIndex(m => m.map.mapCode === data.map.mapCode)
-          if (exists >= 0) {
-            const updated = [...prev]
-            updated[exists] = data
-            return updated
-          }
-          return [...prev, data]
-        })
-        message.success(`成功匯入地圖：${data.map.mapName}`)
-      } catch {
-        message.error('JSON 格式無效，請檢查地圖資料結構')
-      }
+  const uploadMap = async () => {
+    try {
+      const jsonText = await file.text()
+
+      await importMap(jsonText)
+
+      await loadMaps()
+
+      notify.success('地圖已成功儲存至後端')
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : '發生未知錯誤'
+
+      notify.error(`匯入失敗：${errorMessage}`)
     }
-    reader.readAsText(file)
-    return false // 阻止 Upload 元件自動上傳
+  }
+
+  void uploadMap()
+
+  return false
   }
 
   // 側邊選單項目
@@ -482,6 +459,7 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
             >
               <Table<MapDataDto>
                 dataSource={mapList}
+                locale={{ emptyText: loadError ?? '尚無地圖資料' }}
                 columns={buildColumns(
                   (r) => { setSelectedMap(r); setDrawerOpen(true) },
                   handleActivate,

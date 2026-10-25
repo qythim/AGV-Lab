@@ -4,8 +4,9 @@
 //           功能：切換編輯工具 (選取/平移/旋轉/新增/連線)、網格吸附開關、新增物件選單、儲存地圖
 // ============================================================================
 
-import { Button, Tooltip, Divider, Space, Badge, Dropdown, message } from 'antd'
+import { Button, Tooltip, Divider, Space, Badge, Dropdown } from 'antd'
 import type { MenuProps } from 'antd'
+import { useNotify } from '../../../shared/hooks/useNotify'
 import {
   AimOutlined,
   ArrowsAltOutlined,
@@ -58,6 +59,7 @@ export default function EditorToolbar({
   onDeleteSelected,
   isSaving = false,
 }: EditorToolbarProps) {
+  const notify = useNotify()
 
   // 新增 3D 環境物件之下拉選單項目
   const objectMenuItems: MenuProps['items'] = [
@@ -98,27 +100,27 @@ export default function EditorToolbar({
     onSelectTool(tool)
     switch (tool) {
       case 'select':
-        message.info('🎯 選取模式：點選地圖上的路徑點或 3D 物件即可檢視或調整')
+        notify.info('🎯 選取模式：點選地圖上的路徑點或 3D 物件即可檢視或調整')
         break
       case 'translate':
         if (!selectedTarget) {
-          message.warning('💡 請先點選地圖上的路徑點或 3D 物件，即可顯示變形軸進行拖曳！')
+          notify.warning('💡 請先點選地圖上的路徑點或 3D 物件，即可顯示變形軸進行拖曳！')
         } else {
-          message.info('↔️ 平移模式：拖曳紅色(X)或藍色(Z)箭頭即可移動位置')
+          notify.info('↔️ 平移模式：拖曳紅色(X)或藍色(Z)箭頭即可移動位置')
         }
         break
       case 'rotate':
         if (!selectedTarget) {
-          message.warning('💡 請先點選一個 3D 物件，即可顯示旋轉軸進行角度調整！')
+          notify.warning('💡 請先點選一個 3D 物件，即可顯示旋轉軸進行角度調整！')
         } else {
-          message.info('🔄 旋轉模式：拖曳圓環即可旋轉物件方向')
+          notify.info('🔄 旋轉模式：拖曳圓環即可旋轉物件方向')
         }
         break
       case 'add-node':
-        message.info('📍 新增點位模式：請點擊地表網格任意位置，即可建立新路徑點')
+        notify.info('📍 新增點位模式：請點擊地表網格任意位置，即可建立新路徑點')
         break
       case 'connect-edge':
-        message.info('🔗 連線模式：請依序點擊兩個路徑點以建立雙向連線邊')
+        notify.info('🔗 連線模式：請依序點擊兩個路徑點以建立雙向連線邊')
         break
       case 'delete':
         onDeleteSelected()
