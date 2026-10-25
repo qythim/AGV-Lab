@@ -360,7 +360,8 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
 
         setSceneData((prev) => {
           if (!prev) return prev
-          const nextIndex = prev.points.length + 1
+          // const nextIndex = prev.points.length + 1
+          const nextIndex = Math.max(...prev.points.map(p => +p.code.split('_')[1])) + 1;
           const newCode = `P_${String(nextIndex).padStart(2, '0')}`
           const newPoint: ScenePoint = {
             code: newCode,
