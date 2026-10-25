@@ -229,16 +229,25 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
       okButtonProps: { style: { background: COLOR_PRIMARY, border: 'none' } },
       onOk: async () => {
         try {
-          // 更新本地狀態 (生產環境應透過 API 更新後重新載入)
-          const updatedList = mapList.map(m => ({
-            ...m,
-            map: { ...m.map, isActive: m.map.mapCode === record.map.mapCode },
-          }))
-          setMapList(updatedList)
-          await saveMap({ ...record, map: { ...record.map, isActive: true } })
-          notify.success(`已啟用「${record.map.mapName}」`)
+          // 後端儲存成功後才更新清單與詳細資訊，失敗時保留原狀態。
+          const savedMap = await saveMap({
+            ...record,
+            map: { ...record.map, isActive: true },
+          })
+          setMapList(prev => prev.map(item => (
+            item.map.mapCode === savedMap.map.mapCode
+              ? savedMap
+              : { ...item, map: { ...item.map, isActive: false } }
+          )))
+          setSelectedMap(prev => {
+            if (!prev) return prev
+            return prev.map.mapCode === savedMap.map.mapCode
+              ? savedMap
+              : { ...prev, map: { ...prev.map, isActive: false } }
+          })
+          notify.success(`已啟用「${savedMap.map.mapName}」`)
         } catch {
-          notify.warning('後端連線失敗，已更新本地狀態')
+          notify.error('啟用地圖失敗，請確認後端連線後重試')
         }
       },
     })
