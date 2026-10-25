@@ -10,6 +10,11 @@ import com.agvlab.rcs.map.repository.RcsPointRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * 地圖業務邏輯服務 (MapService)：
@@ -124,43 +129,92 @@ public class MapService {
             throw new IllegalArgumentException("地圖代碼 (mapCode) 不可為空");
         }
 
-        // 1. 若此地圖設定為啟用 (is_active = true)，先將系統內既有的啟用地圖改為停用，避免違反唯一索引限制
+        // 1. 驗證完整清單與導航點代碼，避免重複資料被合併成同一筆。
+        if (mapData.getPoints() == null || mapData.getObjects() == null) {
+            throw new IllegalArgumentException("導航點與環境物件清單不可為 null，空清單請使用 []");
+        }
+        Set<String> incomingPointCodes = new HashSet<>();
+        for (RcsPoint point : mapData.getPoints()) {
+            if (point == null || point.getPointCode() == null || point.getPointCode().isBlank()) {
+                throw new IllegalArgumentException("導航點與導航點代碼不可為空");
+            }
+            if (!incomingPointCodes.add(point.getPointCode())) {
+                throw new IllegalArgumentException("導航點代碼重複：" + point.getPointCode());
+            }
+        }
+        for (RcsMapObject object : mapData.getObjects()) {
+            if (object == null) {
+                throw new IllegalArgumentException("環境物件不可為空");
+            }
+        }
+
+        // 2. 比對既有節點，只將本次清單中消失的節點列為刪除候選。
+        Map<String, RcsPoint> existingPoints = new LinkedHashMap<>();
+        for (RcsPoint point : pointRepository.findByMapCode(mapCode)) {
+            existingPoints.put(point.getPointCode(), point);
+        }
+        List<RcsPoint> pointsToDelete = existingPoints.values().stream()
+                .filter(point -> !incomingPointCodes.contains(point.getPointCode()))
+                .toList();
+
+        // 3. 寫入前檢查參照；歷史任務及過期鎖定仍有外鍵，不可直接刪除節點。
+        if (!pointsToDelete.isEmpty()) {
+            Set<String> referencedPointCodes = new HashSet<>(
+                    pointRepository.findReferencedPointCodes(mapCode));
+            List<String> blockedPointCodes = pointsToDelete.stream()
+                    .map(RcsPoint::getPointCode)
+                    .filter(referencedPointCodes::contains)
+                    .sorted()
+                    .toList();
+            if (!blockedPointCodes.isEmpty()) {
+                throw new IllegalArgumentException("導航點仍被車輛、任務或鎖定紀錄參照，無法刪除："
+                        + String.join("、", blockedPointCodes));
+            }
+        }
+
+        // 4. 保留主檔建立時間，切換啟用地圖前先同步停用舊地圖，避免唯一索引衝突。
+        mapRepository.findById(mapCode).ifPresent(existing -> map.setCreatedAt(existing.getCreatedAt()));
         if (Boolean.TRUE.equals(map.getIsActive())) {
             mapRepository.findByIsActiveTrue().ifPresent(existingActive -> {
                 if (!existingActive.getMapCode().equals(mapCode)) {
                     existingActive.setIsActive(false);
-                    mapRepository.save(existingActive);
+                    mapRepository.saveAndFlush(existingActive);
                 }
             });
         }
+        RcsMap savedMap = mapRepository.saveAndFlush(map);
 
-        // 2. 儲存地圖基本主檔資訊
-        RcsMap savedMap = mapRepository.save(map);
-
-        // 3. 清理舊路徑點並批次儲存新路徑點清單
-        pointRepository.deleteByMapCode(mapCode);
-        List<RcsPoint> savedPoints = List.of();
-        if (mapData.getPoints() != null && !mapData.getPoints().isEmpty()) {
-            for (RcsPoint pt : mapData.getPoints()) {
-                if (pt.getId() == null) {
-                    pt.setId(new com.agvlab.rcs.map.entity.RcsPointId());
-                }
-                pt.getId().setMapCode(mapCode);
+        // 5. 原節點直接更新欄位，保留複合主鍵與建立時間；新節點才建立新實體。
+        List<RcsPoint> pointsToSave = new ArrayList<>();
+        for (RcsPoint incoming : mapData.getPoints()) {
+            RcsPoint point = existingPoints.get(incoming.getPointCode());
+            if (point == null) {
+                point = new RcsPoint();
+                point.setMapCode(mapCode);
+                point.setPointCode(incoming.getPointCode());
             }
-            savedPoints = pointRepository.saveAll(mapData.getPoints());
+            point.setX(incoming.getX());
+            point.setY(incoming.getY());
+            point.setZ(incoming.getZ());
+            point.setPointType(incoming.getPointType());
+            point.setHeadingAngle(incoming.getHeadingAngle());
+            point.setNeighbors(incoming.getNeighbors());
+            point.setMaxSpeed(incoming.getMaxSpeed());
+            point.setIsDisabled(incoming.getIsDisabled());
+            pointsToSave.add(point);
         }
+        List<RcsPoint> savedPoints = pointRepository.saveAll(pointsToSave);
+        pointRepository.deleteAll(pointsToDelete);
+        // 外鍵仍是最後一道保護；若參照在檢查後新增，刪除失敗會回滾整筆交易。
+        pointRepository.flush();
 
-        // 4. 清理舊 3D 物件並批次儲存新 3D 物件清單
+        // 6. 環境物件維持整批替換；本次改造只調整導航點同步方式。
         mapObjectRepository.deleteByMapCode(mapCode);
-        List<RcsMapObject> savedObjects = List.of();
-        if (mapData.getObjects() != null && !mapData.getObjects().isEmpty()) {
-            for (RcsMapObject obj : mapData.getObjects()) {
-                obj.setMapCode(mapCode);
-                // 重設 ID 為 null，交由資料庫自增序列 (BIGSERIAL) 產生全新主鍵
-                obj.setId(null);
-            }
-            savedObjects = mapObjectRepository.saveAll(mapData.getObjects());
+        for (RcsMapObject object : mapData.getObjects()) {
+            object.setMapCode(mapCode);
+            object.setId(null);
         }
+        List<RcsMapObject> savedObjects = mapObjectRepository.saveAll(mapData.getObjects());
 
         return new MapDataDto(savedMap, savedPoints, savedObjects);
     }

@@ -31,4 +31,17 @@ public interface RcsPointRepository extends JpaRepository<RcsPoint, RcsPointId> 
     @org.springframework.data.jpa.repository.Modifying
     @Query("DELETE FROM RcsPoint p WHERE p.id.mapCode = :mapCode")
     void deleteByMapCode(@Param("mapCode") String mapCode);
+
+    /** 查詢所有實際外鍵參照，不依車輛、任務狀態或鎖定到期時間過濾。 */
+    @Query(value = """
+            SELECT current_point FROM rcs_agv
+            WHERE current_map_code = :mapCode AND current_point IS NOT NULL
+            UNION
+            SELECT start_point FROM rcs_task WHERE map_code = :mapCode
+            UNION
+            SELECT target_point FROM rcs_task WHERE map_code = :mapCode
+            UNION
+            SELECT point_code FROM rcs_lock_point WHERE map_code = :mapCode
+            """, nativeQuery = true)
+    List<String> findReferencedPointCodes(@Param("mapCode") String mapCode);
 }
