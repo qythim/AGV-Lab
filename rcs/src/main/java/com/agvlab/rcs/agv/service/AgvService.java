@@ -1,8 +1,12 @@
 package com.agvlab.rcs.agv.service;
 import org.springframework.stereotype.Service;
 import com.agvlab.rcs.agv.repository.RcsAgvRepository;
+import com.agvlab.rcs.map.repository.RcsPointRepository;
+import com.agvlab.rcs.map.entity.RcsPoint;
+import com.agvlab.rcs.map.entity.RcsPointId;
 import com.agvlab.rcs.agv.entity.RcsAgv;
 import com.agvlab.rcs.agv.dto.AgvResponse;
+import com.agvlab.rcs.agv.dto.PlaceAgvRequest;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DataIntegrityViolationException;
 import java.util.List;
@@ -11,9 +15,11 @@ import java.util.NoSuchElementException;
 @Service
 public class AgvService {
     private final RcsAgvRepository rcsAgvRepository;
+    private final RcsPointRepository rcsPointRepository;
 
-    public AgvService(RcsAgvRepository rcsAgvRepository) {
+    public AgvService(RcsAgvRepository rcsAgvRepository, RcsPointRepository rcsPointRepository) {
         this.rcsAgvRepository = rcsAgvRepository;
+        this.rcsPointRepository = rcsPointRepository;   
     }
 
     public RcsAgv createAgv(String agvCode, String agvName, String agvType) {
@@ -53,7 +59,12 @@ public class AgvService {
                         agv.getAgvCode(),
                         agv.getAgvName(),
                         agv.getAgvType(),
-                        agv.getStatus()
+                        agv.getStatus(),
+                        agv.getCurrentMapCode(),
+                        agv.getCurrentPoint(),
+                        agv.getPosX(),
+                        agv.getPosY(),
+                        agv.getAngle()
                 ))
                 .toList();
     }
@@ -66,7 +77,47 @@ public class AgvService {
                 agv.getAgvCode(),
                 agv.getAgvName(),
                 agv.getAgvType(),
-                agv.getStatus()
+                agv.getStatus(),
+                agv.getCurrentMapCode(),
+                agv.getCurrentPoint(),
+                agv.getPosX(),
+                agv.getPosY(),
+                agv.getAngle()
         );
+    }
+    @Transactional
+    public RcsAgv placeAgv(String agvCode, PlaceAgvRequest placeAgvRequest) {
+        if(placeAgvRequest == null) {
+            throw new IllegalArgumentException("放置 AGV 的請求不可為空");
+        }
+        if (placeAgvRequest.mapCode() == null || placeAgvRequest.mapCode().isBlank()) {
+            throw new IllegalArgumentException("地圖代碼不可為空");
+        }
+        if (placeAgvRequest.pointCode() == null || placeAgvRequest.pointCode().isBlank()) {
+            throw new IllegalArgumentException("點位代碼不可為空");
+        }
+        RcsAgv agv = rcsAgvRepository.findById(agvCode)
+            .orElseThrow(() -> new NoSuchElementException("找不到指定的 AGV 代碼: " + agvCode));
+
+        if(agv.getCurrentMapCode() != null) {
+            throw new IllegalStateException("AGV " + agvCode + " 已經在地圖上，無法重新放置");
+        }
+        RcsPoint point = rcsPointRepository.findById(
+        new RcsPointId(placeAgvRequest.mapCode(), placeAgvRequest.pointCode())
+            ).orElseThrow(() -> new NoSuchElementException("找不到指定的點位代碼"));
+
+        if (Boolean.TRUE.equals(point.getIsDisabled())) {
+            throw new IllegalStateException("點位已停用，無法放置 AGV");
+        }
+        if (rcsAgvRepository.existsByCurrentMapCodeAndCurrentPoint(placeAgvRequest.mapCode(), placeAgvRequest.pointCode())) {
+            throw new IllegalStateException("點位已有 AGV，無法放置");
+        }
+
+        agv.setPosX(point.getX());
+        agv.setPosY(point.getY());
+        agv.setAngle(point.getHeadingAngle());
+        agv.setCurrentMapCode(placeAgvRequest.mapCode());
+        agv.setCurrentPoint(placeAgvRequest.pointCode());
+        return rcsAgvRepository.saveAndFlush(agv);
     }
 }

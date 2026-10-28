@@ -5,4 +5,5 @@ import java.util.List;
 
 public interface RcsAgvRepository extends JpaRepository<RcsAgv, String> {
     List<RcsAgv> findByCurrentMapCode(String mapCode);
+    boolean existsByCurrentMapCodeAndCurrentPoint(String mapCode, String pointCode);
 }

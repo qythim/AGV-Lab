@@ -2,6 +2,7 @@ package com.agvlab.rcs.agv.controller;
 
 import com.agvlab.rcs.agv.dto.AgvResponse;
 import com.agvlab.rcs.agv.dto.CreateAgvRequest;
+import com.agvlab.rcs.agv.dto.PlaceAgvRequest;
 import com.agvlab.rcs.agv.entity.RcsAgv;
 import com.agvlab.rcs.agv.service.AgvService;
 import org.springframework.http.HttpStatus;
@@ -28,10 +29,15 @@ public class AgvController {
         );
 
         return new AgvResponse(
-                agv.getAgvCode(),
-                agv.getAgvName(),
-                agv.getAgvType(),
-                agv.getStatus()
+            agv.getAgvCode(),
+            agv.getAgvName(),
+            agv.getAgvType(),
+            agv.getStatus(),
+            agv.getCurrentMapCode(),
+            agv.getCurrentPoint(),
+            agv.getPosX(),
+            agv.getPosY(),
+            agv.getAngle()
         );
     }
 
@@ -42,5 +48,21 @@ public class AgvController {
     @GetMapping(value = "/{agvCode}")
     public AgvResponse getAgvByCode(@PathVariable String agvCode) {
         return agvService.getAgv(agvCode);
+    }
+
+    @PutMapping(value = "/{agvCode}/place")
+    public AgvResponse placeAgv(@PathVariable String agvCode, @RequestBody PlaceAgvRequest request) {
+        RcsAgv agv = agvService.placeAgv(agvCode, request);
+        return new AgvResponse(
+            agv.getAgvCode(),
+            agv.getAgvName(),
+            agv.getAgvType(),
+            agv.getStatus(),
+            agv.getCurrentMapCode(),
+            agv.getCurrentPoint(),
+            agv.getPosX(),
+            agv.getPosY(),
+            agv.getAngle()
+        );
     }
 }
