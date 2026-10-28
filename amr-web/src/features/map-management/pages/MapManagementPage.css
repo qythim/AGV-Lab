@@ -1,0 +1,125 @@
+.map-management-page {
+  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: #f0f2f5;
+  color: #28374b;
+  font-size: 14px;
+}
+
+.map-management-header {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 0 24px;
+  background: #001528;
+  color: #c5cbd3;
+}
+
+.map-management-brand {
+  flex: none;
+  color: #f7fafc;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -.6px;
+}
+
+.map-management-brand span { color: #ee970d; }
+.map-management-nav { display: flex; align-self: stretch; align-items: stretch; gap: 8px; }
+.map-management-nav-item {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  padding: 0 15px;
+  background: transparent;
+  color: #c5cbd3;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.map-management-nav-item.selected { color: #fff; font-weight: 600; box-shadow: inset 0 -2px #ee970d; }
+.map-management-nav-item:hover { color: #fff; }
+.map-management-header-right { display: flex; align-items: center; gap: 18px; margin-left: auto; }
+.map-management-active { color: #ee970d; white-space: nowrap; }
+.map-management-header-right .ant-btn { background: transparent; color: #c5cbd3; border-color: #53606b; }
+.map-management-header-right .ant-btn:hover { color: #fff !important; border-color: #fff !important; }
+
+.map-management-breadcrumb {
+  flex: none;
+  padding: 11px 30px;
+  background: #fff;
+  color: #68788d;
+  font-size: 13px;
+}
+.map-management-breadcrumb span { padding: 0 10px; color: #abb2bc; }
+.map-management-content { flex: 1; padding: 9px 8px 24px; }
+.map-management-panel { min-height: 580px; padding: 13px 24px 5px; background: #fff; border-radius: 2px; }
+
+.map-management-filters {
+  display: grid;
+  grid-template-columns: max-content minmax(180px, 410px) max-content minmax(180px, 410px) 1fr;
+  gap: 12px 16px;
+  align-items: center;
+  padding: 0 0 14px;
+}
+.map-management-filters label { white-space: nowrap; }
+.map-management-filters .ant-input-affix-wrapper { height: 34px; }
+.map-management-filter-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.map-management-toolbar { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px; color: #7b8794; font-size: 12px; }
+.map-management-toolbar .ant-btn { color: #2e3d4e; }
+.map-management-selection {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 16px;
+  margin-bottom: 8px;
+  background: #e6f6ff;
+  border: 1px solid #9ad2ff;
+  border-radius: 3px;
+  color: #26394c;
+}
+.map-management-selection strong { color: #ee970d; }
+.map-management-info-icon { width: 14px; height: 14px; display: inline-grid; place-items: center; margin-right: 3px; border-radius: 50%; background: #1699ef; color: white; font-size: 10px; font-weight: 700; }
+.map-management-selection .ant-btn { color: #dc8200; }
+
+.map-management-table .ant-table { color: #3d4b5c; }
+.map-management-table .ant-table-thead > tr > th { background: #fafafa; color: #233348; font-weight: 500; white-space: nowrap; }
+.map-management-table .ant-table-tbody > tr > td { padding-top: 10px; padding-bottom: 10px; }
+.map-management-table .ant-table-tbody > tr:hover > td { background: #fffaf0 !important; }
+.map-management-table .ant-btn-link { padding: 0 6px; color: #e79000; }
+.map-management-table .ant-btn-link:hover { color: #b86e00 !important; }
+.map-management-table .ant-table-pagination { margin: 18px 0 14px; }
+.map-code { color: #d78100; font-weight: 600; }
+.map-name { color: #28374b; }
+.map-action-divider { display: inline-block; height: 13px; margin: 0 4px; border-left: 1px solid #e2e5e9; }
+.map-management-drawer-actions { margin-top: 24px; }
+.map-management-drawer .ant-drawer-title { color: #28374b; font-weight: 600; }
+.map-management-drawer .ant-drawer-close { color: #68788d; }
+.map-management-drawer .ant-drawer-body { padding: 24px; }
+.map-management-drawer .ant-descriptions-item { padding-bottom: 12px; }
+.map-management-drawer .ant-descriptions-item-label { min-width: 84px; }
+.agv-management-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; }
+.agv-management-toolbar h1 { margin: 0 0 4px; color: #28374b; font-size: 18px; font-weight: 600; }
+.agv-management-toolbar p { margin: 0; color: #7b8794; font-size: 13px; }
+.agv-management-alert { margin-bottom: 16px; }
+.agv-placed-label { color: #7b8794; font-size: 12px; }
+.map-management-footer { flex: none; padding: 15px; text-align: center; color: #8994a2; font-size: 12px; }
+
+@media (max-width: 1050px) {
+  .map-management-filters { grid-template-columns: max-content minmax(180px, 1fr) max-content minmax(180px, 1fr); }
+  .map-management-filter-actions { grid-column: 1 / -1; }
+}
+
+@media (max-width: 650px) {
+  .map-management-header { flex-wrap: wrap; gap: 4px 16px; padding: 7px 16px; }
+  .map-management-header-right { width: 100%; justify-content: space-between; }
+  .map-management-breadcrumb { padding: 11px 16px; }
+  .map-management-panel { padding: 16px 12px 4px; }
+  .map-management-filters { grid-template-columns: 1fr; gap: 7px; }
+  .map-management-filter-actions { grid-column: 1; justify-content: flex-start; margin: 6px 0; }
+  .agv-management-toolbar { align-items: flex-start; flex-direction: column; }
+}
