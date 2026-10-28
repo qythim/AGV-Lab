@@ -65,4 +65,20 @@ public class AgvController {
             agv.getAngle()
         );
     }
+
+    @DeleteMapping(value = "/{agvCode}/place")
+    public AgvResponse unplaceAgv(@PathVariable String agvCode) {
+        RcsAgv agv = agvService.unplaceAgv(agvCode);
+        return new AgvResponse(
+            agv.getAgvCode(),
+            agv.getAgvName(),
+            agv.getAgvType(),
+            agv.getStatus(),
+            agv.getCurrentMapCode(),
+            agv.getCurrentPoint(),
+            agv.getPosX(),
+            agv.getPosY(),
+            agv.getAngle()
+        );
+    }
 }

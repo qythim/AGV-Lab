@@ -120,4 +120,30 @@ public class AgvService {
         agv.setCurrentPoint(placeAgvRequest.pointCode());
         return rcsAgvRepository.saveAndFlush(agv);
     }
+
+    @Transactional
+    public RcsAgv unplaceAgv(String agvCode) {
+        RcsAgv agv = rcsAgvRepository.findById(agvCode)
+            .orElseThrow(() -> new NoSuchElementException("找不到指定的 AGV 代碼: " + agvCode));
+
+        if (agv.getCurrentMapCode() == null) {
+            throw new IllegalStateException("AGV " + agvCode + " 尚未放置在地圖上");
+        }
+        if (agv.getCurrentTaskId() != null || rcsAgvRepository.hasOpenTask(agvCode)) {
+            throw new IllegalStateException("AGV " + agvCode + " 尚有未完成的任務，無法移出地圖");
+        }
+        if (!"IDLE".equals(agv.getStatus())) {
+            throw new IllegalStateException("AGV " + agvCode + " 目前不是待命狀態，無法移出地圖");
+        }
+        if (rcsAgvRepository.hasPointLock(agvCode)) {
+            throw new IllegalStateException("AGV " + agvCode + " 尚有點位鎖定，無法移出地圖");
+        }
+
+        agv.setCurrentMapCode(null);
+        agv.setCurrentPoint(null);
+        agv.setPosX(null);
+        agv.setPosY(null);
+        agv.setAngle(0.0);
+        return rcsAgvRepository.saveAndFlush(agv);
+    }
 }
