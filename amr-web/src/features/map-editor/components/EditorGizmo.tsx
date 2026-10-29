@@ -48,7 +48,7 @@ export default function EditorGizmo({
 
     if (selectedTarget.type === 'POINT') {
       const p = sceneData.points.find((pt) => pt.code === selectedTarget.id)
-      if (p) return { pos: p.position, rotY: p.headingRad }
+      if (p) return { pos: p.position, rotY: 0 }
     } else if (selectedTarget.type === 'OBJECT') {
       const o = sceneData.objects.find((obj) => obj.id === selectedTarget.id)
       if (o) return { pos: o.position, rotY: o.rotationY }

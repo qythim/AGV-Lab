@@ -37,26 +37,23 @@ export type PointType = 'NORMAL' | 'CHARGER' | 'RACK' | 'STATION'
  * 地圖路徑點 (Node) DTO
  */
 export interface PointDto {
-  /** 點位唯一編號 (例：P_01) */
   pointCode: string
-  /** 所屬地圖編號 */
-  mapCode: string
-  /** 地面 X 坐標 (公尺，對應 Three.js X) */
-  x: number
-  /** 地面 Y 坐標 (公尺，對應 Three.js Z) */
-  y: number
-  /** 點位高度 (公尺，預設 0.0，對應 Three.js Y) */
-  z?: number
-  /** 點位功能類型 */
+  pointName?: string
   pointType: PointType
-  /** AGV 停靠時之預設轉向角度 (0 ~ 359 度) */
-  headingAngle?: number
-  /** 相鄰連通點位清單之 JSON 字串 (例："[\"P_02\", \"P_03\"]") */
-  neighbors: string
-  /** 該點允許之最高車速 (m/s) */
-  maxSpeed?: number
-  /** 是否已被停用/封鎖 */
-  isDisabled?: boolean
+  x: number
+  y: number
+}
+
+/** 每條路線只表示 start → end；倒車不代表反向路線。 */
+export interface LineDto {
+  lineCode: string
+  startPointCode: string
+  endPointCode: string
+  robotType: 'ALL' | 'STANDARD' | 'TELESCOPIC'
+  robotCarrierState: ('EMPTY' | 'LOADED')[]
+  maxSpeed: number
+  stoppable: boolean
+  allowedTravelModes: ('FORWARD' | 'REVERSE')[]
 }
 
 /**
@@ -99,7 +96,8 @@ export interface MapDataDto {
   /** 地圖主檔資訊 */
   map: MapDto
   /** 路徑點清單 */
-  points: PointDto[]
+  pointList: PointDto[]
+  lineList: LineDto[]
   /** 3D 環境物件清單 */
   objects: MapObjectDto[]
 }

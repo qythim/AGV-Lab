@@ -41,8 +41,8 @@ export default function AgvManagement({ maps, mapsLoading, mapLoadError }: AgvMa
   useEffect(() => { void Promise.resolve().then(loadAgvs) }, [loadAgvs])
 
   const selectedMap = maps.find(item => item.map.mapCode === placementMapCode)
-  const availablePoints = useMemo(() => selectedMap?.points.filter(point => (
-    !point.isDisabled && !agvs.some(agv => (
+  const availablePoints = useMemo(() => selectedMap?.pointList.filter(point => (
+    !agvs.some(agv => (
       agv.currentMapCode === selectedMap.map.mapCode && agv.currentPoint === point.pointCode
     ))
   )) ?? [], [selectedMap, agvs])

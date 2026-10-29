@@ -3,7 +3,7 @@ import { App, Badge, Button, ConfigProvider, Descriptions, Drawer, Input, Space,
 import type { ColumnsType } from 'antd/es/table'
 import { CheckCircleOutlined, EditOutlined, EyeOutlined, ImportOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNotify } from '../../../shared/hooks/useNotify'
-import { fetchMapList, importMap, saveMap } from '../api/mapApi'
+import { fetchMapList, importMap, activateMap } from '../api/mapApi'
 import AgvManagement from '../components/AgvManagement'
 import type { MapDataDto } from '../types/mapDto'
 import './MapManagementPage.css'
@@ -69,7 +69,7 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
       onOk: async () => {
         try {
           // 後端儲存成功後才更新清單與詳細資訊。
-          const savedMap = await saveMap({ ...record, map: { ...record.map, isActive: true } })
+          const savedMap = await activateMap(record.map.mapCode, record.map.version)
           setMapList(previous => previous.map(item => (
             item.map.mapCode === savedMap.map.mapCode
               ? savedMap
@@ -82,9 +82,9 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
               : { ...previous, map: { ...previous.map, isActive: false } }
           })
           notify.success(`已啟用地圖「${savedMap.map.mapName}」`)
-        } catch {
-          notify.error('啟用地圖失敗，請確認後端服務與網路連線。')
-          throw new Error('啟用地圖失敗')
+        } catch (error) {
+          notify.error(error instanceof Error ? error.message : '啟用地圖失敗')
+          throw error
         }
       },
     })
@@ -110,7 +110,7 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
     { title: '地圖名稱', dataIndex: ['map', 'mapName'], key: 'mapName', render: (name: string) => <span className="map-name">{name}</span> },
     { title: '地圖版本', dataIndex: ['map', 'version'], key: 'version', width: 120, render: (version: number) => `v${version}` },
     { title: '地圖尺寸', key: 'size', width: 150, render: (_, record) => `${record.map.width} × ${record.map.height} m` },
-    { title: '路徑點', key: 'points', width: 100, render: (_, record) => record.points?.length ?? 0 },
+    { title: '路徑點', key: 'points', width: 100, render: (_, record) => record.pointList?.length ?? 0 },
     { title: '場景物件', key: 'objects', width: 110, render: (_, record) => record.objects?.length ?? 0 },
     { title: '狀態', dataIndex: ['map', 'isActive'], key: 'isActive', width: 100, render: (active: boolean) => <Badge status={active ? 'success' : 'default'} text={active ? '啟用中' : '未啟用'} /> },
     {
@@ -210,7 +210,7 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
               { key: 'status', label: '狀態', children: selectedMap.map.isActive ? <Tag color="success">啟用中</Tag> : <Tag>未啟用</Tag> },
               { key: 'width', label: '寬度', children: `${selectedMap.map.width} 公尺` },
               { key: 'height', label: '長度', children: `${selectedMap.map.height} 公尺` },
-              { key: 'points', label: '路徑點', children: `${selectedMap.points?.length ?? 0} 個` },
+              { key: 'points', label: '路徑點', children: `${selectedMap.pointList?.length ?? 0} 個` },
               { key: 'objects', label: '場景物件', children: `${selectedMap.objects?.length ?? 0} 個` },
             ]} />
             <Space className="map-management-drawer-actions" wrap>

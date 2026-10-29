@@ -120,7 +120,7 @@ export default function EditorToolbar({
         notify.info('📍 新增點位模式：請點擊地表網格任意位置，即可建立新路徑點')
         break
       case 'connect-edge':
-        notify.info('🔗 連線模式：請依序點擊兩個路徑點以建立雙向連線邊')
+        notify.info('🔗 連線模式：請依序點擊兩個路徑點以建立單向路線；反向請再連接一次')
         break
       case 'delete':
         onDeleteSelected()

@@ -20,36 +20,19 @@ import type { SceneData } from '../types/map3d'
 export function sceneDataToMapDto(sceneData: SceneData, originalDto?: MapDataDto): MapDataDto {
   const mapCode = sceneData.mapCode
 
-  // 1. 轉換路徑點 (ScenePoint → PointDto)
-  const points: PointDto[] = sceneData.points.map((sp) => {
-    // 找出所有與該點相連的點位代碼
-    const neighborCodes = new Set<string>()
-    for (const edge of sceneData.edges) {
-      const isFrom = Math.hypot(edge.from[0] - sp.position[0], edge.from[2] - sp.position[2]) < 0.01
-      const isTo   = Math.hypot(edge.to[0]   - sp.position[0], edge.to[2]   - sp.position[2]) < 0.01
-
-      if (isFrom) {
-        const neighbor = sceneData.points.find(p => Math.hypot(p.position[0] - edge.to[0], p.position[2] - edge.to[2]) < 0.01)
-        if (neighbor && neighbor.code !== sp.code) neighborCodes.add(neighbor.code)
-      } else if (isTo) {
-        const neighbor = sceneData.points.find(p => Math.hypot(p.position[0] - edge.from[0], p.position[2] - edge.from[2]) < 0.01)
-        if (neighbor && neighbor.code !== sp.code) neighborCodes.add(neighbor.code)
-      }
-    }
-
-    return {
-      pointCode: sp.code,
-      mapCode,
-      x: Number(sp.position[0].toFixed(2)),
-      y: Number(sp.position[2].toFixed(2)),
-      z: 0.0,
-      pointType: sp.type,
-      headingAngle: Number(((sp.headingRad * 180) / Math.PI).toFixed(1)),
-      neighbors: JSON.stringify(Array.from(neighborCodes).sort()),
-      maxSpeed: 1.5,
-      isDisabled: sp.isDisabled,
-    }
-  })
+  const pointList: PointDto[] = sceneData.points.map(sp => ({
+    pointCode: sp.code,
+    pointName: sp.name,
+    pointType: sp.type,
+    x: Number(sp.position[0].toFixed(2)),
+    y: Number(sp.position[2].toFixed(2)),
+  }))
+  // 直接保留有向路線與限制，不從幾何位置推測鄰接關係。
+  const lineList = sceneData.edges.map(line => ({
+    ...line,
+    robotCarrierState: [...line.robotCarrierState],
+    allowedTravelModes: [...line.allowedTravelModes],
+  }))
 
   // 2. 轉換 3D 環境物件 (SceneObject → MapObjectDto)
   const objects: MapObjectDto[] = sceneData.objects.map((so) => {
@@ -91,7 +74,8 @@ export function sceneDataToMapDto(sceneData: SceneData, originalDto?: MapDataDto
       width: sceneData.floorWidth,
       height: sceneData.floorDepth,
     },
-    points,
+    pointList,
+    lineList,
     objects,
   }
 }

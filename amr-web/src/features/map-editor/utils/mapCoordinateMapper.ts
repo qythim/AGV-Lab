@@ -16,77 +16,19 @@ import type { MapDataDto, PointDto, MapObjectDto } from '../../map-management/ty
 import type {
   SceneData,
   ScenePoint,
-  SceneEdge,
   SceneObject,
-  Vec3,
 } from '../types/map3d'
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 解析 neighbors JSON 字串為點位編號陣列
-// 例："[\"P_02\",\"P_03\"]"  →  ["P_02", "P_03"]
-// ─────────────────────────────────────────────────────────────────────────────
-function parseNeighbors(neighborsJson: string): string[] {
-  try {
-    const parsed = JSON.parse(neighborsJson)
-    if (Array.isArray(parsed)) return parsed as string[]
-    return []
-  } catch {
-    return []
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 將單一路徑點 DTO 轉換為 Three.js ScenePoint
-// ─────────────────────────────────────────────────────────────────────────────
 function mapPointDtoToScenePoint(dto: PointDto): ScenePoint {
   return {
     code: dto.pointCode,
     // y 軸固定為小值使點位略高於地板，避免 Z-fighting
     position: [dto.x, 0.05, dto.y],
     type: dto.pointType,
-    // 將停靠角度從度轉換為弧度
-    headingRad: ((dto.headingAngle ?? 0) * Math.PI) / 180,
-    isDisabled: dto.isDisabled ?? false,
+    name: dto.pointName,
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 根據所有路徑點建立連線邊列表 (避免重複邊 A→B 與 B→A)
-// ─────────────────────────────────────────────────────────────────────────────
-function buildEdges(points: PointDto[]): SceneEdge[] {
-  // 建立點位編號 → Three.js 坐標的查詢表
-  const positionMap = new Map<string, Vec3>()
-  for (const p of points) {
-    positionMap.set(p.pointCode, [p.x, 0.05, p.y])
-  }
-
-  const addedEdges = new Set<string>()
-  const edges: SceneEdge[] = []
-
-  for (const point of points) {
-    const neighbors = parseNeighbors(point.neighbors)
-    const fromPos = positionMap.get(point.pointCode)
-    if (!fromPos) continue
-
-    for (const neighborCode of neighbors) {
-      const toPos = positionMap.get(neighborCode)
-      if (!toPos) continue
-
-      // 使用排序後的組合鍵去除重複邊
-      const edgeKey = [point.pointCode, neighborCode].sort().join('|')
-      if (addedEdges.has(edgeKey)) continue
-      addedEdges.add(edgeKey)
-
-      edges.push({ from: fromPos, to: toPos })
-    }
-  }
-
-  return edges
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 將單一 3D 環境物件 DTO 轉換為 Three.js SceneObject
-// ─────────────────────────────────────────────────────────────────────────────
 function mapObjectDtoToSceneObject(dto: MapObjectDto, index: number): SceneObject {
   const posZ = dto.posZ ?? 0
   const height = dto.height
@@ -114,8 +56,16 @@ function mapObjectDtoToSceneObject(dto: MapObjectDto, index: number): SceneObjec
 // 主轉換函式：將完整 MapDataDto 轉換為可供 FactoryScene 直接使用之 SceneData
 // ─────────────────────────────────────────────────────────────────────────────
 export function mapDtoToSceneData(dto: MapDataDto): SceneData {
-  const scenePoints = dto.points.map(mapPointDtoToScenePoint)
-  const edges = buildEdges(dto.points)
+  const scenePoints = dto.pointList.map(mapPointDtoToScenePoint)
+  const codes = new Set(dto.pointList.map(point => point.pointCode))
+  if (!dto.lineList.every(line => codes.has(line.startPointCode) && codes.has(line.endPointCode))) {
+    throw new Error('路線參照不存在的點位')
+  }
+  const edges = dto.lineList.map(line => ({
+    ...line,
+    robotCarrierState: [...line.robotCarrierState],
+    allowedTravelModes: [...line.allowedTravelModes],
+  }))
   const sceneObjects = dto.objects.map((obj, i) =>
     mapObjectDtoToSceneObject(obj, i)
   )

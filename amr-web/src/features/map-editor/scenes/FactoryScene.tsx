@@ -8,6 +8,7 @@
 // ============================================================================
 
 import { Suspense, useEffect, useState, useCallback, useMemo } from 'react'
+import LineManagement from '../components/LineManagement'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 import { useNotify } from '../../../shared/hooks/useNotify'
@@ -373,22 +374,27 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
             const p2 = prev.points.find((p) => p.code === code)
             if (!p1 || !p2) return prev
 
-            // 檢查是否已存在連線
-            const edgeExists = prev.edges.some(
-              (e) =>
-                (Math.hypot(e.from[0] - p1.position[0], e.from[2] - p1.position[2]) < 0.01 &&
-                 Math.hypot(e.to[0] - p2.position[0], e.to[2] - p2.position[2]) < 0.01) ||
-                (Math.hypot(e.from[0] - p2.position[0], e.from[2] - p2.position[2]) < 0.01 &&
-                 Math.hypot(e.to[0] - p1.position[0], e.to[2] - p1.position[2]) < 0.01)
+            const edgeExists = prev.edges.some(e =>
+              e.startPointCode === p1.code && e.endPointCode === p2.code
             )
-
             if (edgeExists) {
-              notify.warning(`路徑 ${pendingEdgeStart} ↔ ${code} 已經存在`)
+              notify.warning('此方向的路線已存在')
               return prev
             }
-
-            const newEdge: SceneEdge = { from: p1.position, to: p2.position }
-            notify.success(`🎉 成功建立路徑連線：${pendingEdgeStart} ↔ ${code}`)
+            let index = 1
+            const codes = new Set(prev.edges.map(e => e.lineCode))
+            while (codes.has(`L_${String(index).padStart(3, '0')}`)) index++
+            const newEdge: SceneEdge = {
+              lineCode: `L_${String(index).padStart(3, '0')}`,
+              startPointCode: p1.code,
+              endPointCode: p2.code,
+              robotType: 'ALL',
+              robotCarrierState: ['EMPTY', 'LOADED'],
+              maxSpeed: 1.5,
+              stoppable: true,
+              allowedTravelModes: ['FORWARD', 'REVERSE'],
+            }
+            notify.success(`已建立單向路線：${p1.code} → ${p2.code}`)
             return { ...prev, edges: [...prev.edges, newEdge] }
           })
           setPendingEdgeStart(null)
@@ -428,8 +434,7 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
             code: newCode,
             position: [snapX, 0.05, snapZ],
             type: 'NORMAL',
-            headingRad: 0,
-            isDisabled: false,
+            name: newCode,
           }
 
           notify.success(`📍 成功在 [${snapX}, ${snapZ}] 新增路徑點：${newCode}`)
@@ -515,9 +520,7 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
         // 移除點位並同步移除相關的連線邊
         const updatedPoints = prev.points.filter((p) => p.code !== code)
         const updatedEdges = prev.edges.filter(
-          (e) =>
-            Math.hypot(e.from[0] - targetPt.position[0], e.from[2] - targetPt.position[2]) >= 0.01 &&
-            Math.hypot(e.to[0] - targetPt.position[0], e.to[2] - targetPt.position[2]) >= 0.01
+          e => e.startPointCode !== code && e.endPointCode !== code
         )
         return { ...prev, points: updatedPoints, edges: updatedEdges }
       })
@@ -545,17 +548,8 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
           p.code === code ? { ...p, position: newPos } : p
         )
 
-        // 同步更新連線邊的頂點坐標
-        const updatedEdges = prev.edges.map((edge) => {
-          const isFrom = Math.hypot(edge.from[0] - oldPt.position[0], edge.from[2] - oldPt.position[2]) < 0.05
-          const isTo   = Math.hypot(edge.to[0]   - oldPt.position[0], edge.to[2]   - oldPt.position[2]) < 0.05
-
-          if (isFrom) return { ...edge, from: newPos }
-          if (isTo)   return { ...edge, to:   newPos }
-          return edge
-        })
-
-        return { ...prev, points: updatedPoints, edges: updatedEdges }
+        // 路線使用點位代碼參照，移動座標不需修改路線。
+        return { ...prev, points: updatedPoints }
       })
       markDirty()
     },
@@ -583,12 +577,12 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
     setIsSaving(true)
     try {
       const dto = sceneDataToMapDto(sceneData, rawDto)
-      await saveMap(dto)
-      setRawDto(dto)
+      const saved = await saveMap(dto)
+      setRawDto(saved)
       markClean()
       notify.success(`🎉 地圖「${sceneData.mapName}」變更已成功永久儲存至後端 RCS 資料庫！`)
-    } catch {
-      notify.error('儲存失敗：後端連線中斷或伺服器回應異常')
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '儲存失敗')
     } finally {
       setIsSaving(false)
     }
@@ -610,6 +604,7 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {isSaving && <div style={{ position: 'fixed', inset: 0, zIndex: 2000, cursor: 'wait' }} />}
       {/* ── 懸浮編輯工具列 ────────────────────────────────────────────── */}
       {mode === 'edit' && <EditorToolbar
         currentTool={currentTool}
@@ -624,6 +619,13 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
         onDeleteSelected={handleDeleteSelected}
         isSaving={isSaving}
       />}
+
+      {mode === 'edit' && sceneData && (
+        <LineManagement edges={sceneData.edges} onChange={edges => {
+          setSceneData(previous => previous ? { ...previous, edges } : previous)
+          markDirty()
+        }} />
+      )}
 
       {/* ── HUD 覆蓋層 (畫面左下角) ──────────────────────────────────── */}
       <SceneHud sceneData={sceneData} error={loadError} loading={loading} agvCount={visibleAgvs.length} agvLoading={agvLoading} agvError={agvError} />

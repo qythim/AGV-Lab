@@ -1,3 +1,4 @@
+import type { LineDto } from '../../map-management/types/mapDto'
 // ============================================================================
 // 檔案名稱：map3d.ts
 // 模組說明：Three.js 3D 渲染所需之純前端資料結構定義
@@ -19,21 +20,13 @@ export interface ScenePoint {
   position: Vec3
   /** 點位功能類型 (影響渲染顏色) */
   type: 'NORMAL' | 'CHARGER' | 'RACK' | 'STATION'
-  /** AGV 停靠方向角度 (弧度) */
-  headingRad: number
-  /** 是否停用 */
-  isDisabled: boolean
+  name?: string
 }
 
 /**
  * 兩個路徑點之間的連線邊 (Edge)
  */
-export interface SceneEdge {
-  /** 起點坐標 */
-  from: Vec3
-  /** 終點坐標 */
-  to: Vec3
-}
+export type SceneEdge = LineDto
 
 /**
  * 坐標系轉換後之 3D 環境物件
