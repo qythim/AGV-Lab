@@ -1,236 +1,162 @@
 package com.agvlab.rcs.map.service;
 
 import com.agvlab.rcs.map.dto.MapDataDto;
-import com.agvlab.rcs.map.entity.RcsMap;
-import com.agvlab.rcs.map.entity.RcsMapObject;
-import com.agvlab.rcs.map.entity.RcsPoint;
-import com.agvlab.rcs.map.repository.RcsMapObjectRepository;
-import com.agvlab.rcs.map.repository.RcsMapRepository;
-import com.agvlab.rcs.map.repository.RcsPointRepository;
+import com.agvlab.rcs.map.dto.MapDataDto.MapInfo;
+import java.util.*;
 import org.springframework.stereotype.Service;
+import com.agvlab.rcs.map.repository.MapDocumentRepository;
 import org.springframework.transaction.annotation.Transactional;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.HashSet;
-import java.util.Set;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.context.event.EventListener;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 
-/**
- * 地圖業務邏輯服務 (MapService)：
- * 負責從資料庫讀取地圖靜態資料，封裝為 MapDataDto，並呼叫 MapParseJson 序列化為 JSON。
- */
 @Service
 public class MapService {
+    private final MapDocumentRepository repository;
+    private final MapParseJson json;
+    private final MapDocumentValidator validator;
+    private final MapContentStore store;
+    private volatile MapGraph activeGraph;
 
-    private final RcsMapRepository mapRepository;
-    private final RcsPointRepository pointRepository;
-    private final RcsMapObjectRepository mapObjectRepository;
-    private final MapParseJson MapParseJson;
-
-    public MapService(
-            RcsMapRepository mapRepository,
-            RcsPointRepository pointRepository,
-            RcsMapObjectRepository mapObjectRepository,
-            MapParseJson MapParseJson) {
-        this.mapRepository = mapRepository;
-        this.pointRepository = pointRepository;
-        this.mapObjectRepository = mapObjectRepository;
-        this.MapParseJson = MapParseJson;
+    public MapService(MapDocumentRepository repository, MapParseJson json, MapDocumentValidator validator, MapContentStore store) {
+        this.repository = repository; this.json = json; this.validator = validator; this.store = store;
     }
 
-    /**
-     * 取得系統內所有完整地圖資料清單 (包含地圖主檔、所有路徑點、所有 3D 物件，供前端 MapManagementPage 表格列表與統計展示)
-     *
-     * @return 所有地圖 MapDataDto 封裝清單
-     */
+    // 與放置 AGV 共用交易鎖，避免檢查參照後同時有人放車或切換版本。
+    public void lockMapChanges() {
+        repository.lockChanges();
+    }
+
     @Transactional(readOnly = true)
     public List<MapDataDto> getAllMaps() {
-        List<RcsMap> maps = mapRepository.findAll();
-        return maps.stream()
-                .map(map -> getMapData(map.getMapCode()))
-                .toList();
+        return repository.mapCodes()
+                .stream().map(this::getMapData).toList();
     }
 
-    /**
-     * 依據地圖代碼取得完整的靜態地圖資料物件 (MapDataDto)
-     *
-     * @param mapCode 地圖代碼 (如 FACTORY_01)
-     * @return 整合後的 MapDataDto 封裝物件
-     */
     @Transactional(readOnly = true)
     public MapDataDto getMapData(String mapCode) {
-        // 1. 查詢地圖基本資訊
-        RcsMap map = mapRepository.findById(mapCode)
-                .orElseThrow(() -> new RuntimeException("找不到指定的地圖代碼: " + mapCode));
-
-        // 2. 查詢該地圖的所有路徑點
-        List<RcsPoint> points = pointRepository.findByMapCode(mapCode);
-
-        // 3. 查詢該地圖的所有 3D 物件
-        List<RcsMapObject> objects = mapObjectRepository.findByMapCode(mapCode);
-
-        // 4. 打包為 DTO 物件回傳
-        return new MapDataDto(map, points, objects);
+        return loadCurrent(mapCode).document();
     }
 
-    /**
-     * 依據地圖代碼取得格式化 JSON 字串 (直接供前端 Three.js 呼叫使用)
-     *
-     * @param mapCode 地圖代碼
-     * @return 完整地圖的 JSON 字串
-     */
+    private MapGraph loadCurrent(String mapCode) {
+        var row = repository.current(mapCode).orElseThrow(() ->
+                new NoSuchElementException(mapCode == null ? "目前沒有啟用地圖" : "找不到地圖：" + mapCode));
+        MapGraph cached = activeGraph;
+        if (row.active() && cached != null && cached.contentId() == row.id()) return cached;
+        var data = json.parseJson(store.read(row.id(), row.content(), row.sha256()));
+        var result = withMetadata(data, data.map().version(), row.active());
+        validator.validate(result);
+        return MapGraph.from(row.id(), result);
+    }
+
     @Transactional(readOnly = true)
-    public String getMapJson(String mapCode) {
-        MapDataDto mapData = getMapData(mapCode);
-        return MapParseJson.toJson(mapData);
+    public MapGraph getActiveGraph() {
+        MapGraph snapshot = loadCurrent(null);
+        // 未提交交易內的版本不可發布給其他請求。
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || TransactionSynchronizationManager.isCurrentTransactionReadOnly()) activeGraph = snapshot;
+        return snapshot;
     }
 
-    /**
-     * 取得目前系統啟用的有效完整地圖資料物件
-     *
-     * @return 啟用狀態的地圖 MapDataDto
-     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void warmActiveMap() {
+        if (!repository.activeMapCodes().isEmpty())
+            getActiveGraph();
+    }
+
     @Transactional(readOnly = true)
-    public MapDataDto getActiveMapData() {
-        RcsMap activeMap = mapRepository.findByIsActiveTrue()
-                .orElseThrow(() -> new RuntimeException("目前系統中沒有處於啟用狀態的地圖"));
+    public MapDataDto getActiveMapData() { return getActiveGraph().document(); }
 
-        return getMapData(activeMap.getMapCode());
-    }
-
-    /**
-     * 取得目前系統啟用的地圖 JSON 字串
-     *
-     * @return 啟用狀態地圖的格式化 JSON 字串
-     */
     @Transactional(readOnly = true)
-    public String getActiveMapJson() {
-        MapDataDto mapData = getActiveMapData();
-        return MapParseJson.toJson(mapData);
-    }
+    public String getMapJson(String mapCode) { return json.toJson(getMapData(mapCode)); }
 
-    /**
-     * 儲存或更新完整地圖資料 (包含地圖主檔、所有路徑點、所有 3D 物件)
-     * 使用 @Transactional 確保原子性：任一步驟失敗即全面自動回滾 (Rollback)
-     *
-     * @param mapData 待儲存的 MapDataDto 封裝物件
-     * @return 儲存完成後的 MapDataDto 封裝物件
-     */
+    @Transactional(readOnly = true)
+    public String getActiveMapJson() { return json.toJson(getActiveMapData()); }
+
     @Transactional
-    public MapDataDto saveMapData(MapDataDto mapData) {
-        if (mapData == null || mapData.getMap() == null) {
-            throw new IllegalArgumentException("地圖資料或地圖主檔物件不可為空");
+    public MapDataDto saveMapData(MapDataDto input) {
+        validator.validate(input);
+        lockMapChanges();
+        String code = input.map().mapCode();
+        var currentVersion = repository.findVersion(code);
+        int version;
+        boolean active = false;
+        if (currentVersion.isEmpty()) {
+            version = 1;
+            repository.createMap(code, input.map().mapName());
+        } else {
+            if (!currentVersion.orElseThrow().equals(input.map().version()))
+                throw new IllegalStateException("地圖已被更新，請重新載入後再編輯");
+            ensureUnused(code);
+            version = Math.addExact(currentVersion.orElseThrow(), 1);
+            active = repository.isActive(code);
         }
-
-        RcsMap map = mapData.getMap();
-        String mapCode = map.getMapCode();
-        if (mapCode == null || mapCode.trim().isEmpty()) {
-            throw new IllegalArgumentException("地圖代碼 (mapCode) 不可為空");
-        }
-
-        // 1. 驗證完整清單與導航點代碼，避免重複資料被合併成同一筆。
-        if (mapData.getPoints() == null || mapData.getObjects() == null) {
-            throw new IllegalArgumentException("導航點與環境物件清單不可為 null，空清單請使用 []");
-        }
-        Set<String> incomingPointCodes = new HashSet<>();
-        for (RcsPoint point : mapData.getPoints()) {
-            if (point == null || point.getPointCode() == null || point.getPointCode().isBlank()) {
-                throw new IllegalArgumentException("導航點與導航點代碼不可為空");
-            }
-            if (!incomingPointCodes.add(point.getPointCode())) {
-                throw new IllegalArgumentException("導航點代碼重複：" + point.getPointCode());
-            }
-        }
-        for (RcsMapObject object : mapData.getObjects()) {
-            if (object == null) {
-                throw new IllegalArgumentException("環境物件不可為空");
-            }
-        }
-
-        // 2. 比對既有節點，只將本次清單中消失的節點列為刪除候選。
-        Map<String, RcsPoint> existingPoints = new LinkedHashMap<>();
-        for (RcsPoint point : pointRepository.findByMapCode(mapCode)) {
-            existingPoints.put(point.getPointCode(), point);
-        }
-        List<RcsPoint> pointsToDelete = existingPoints.values().stream()
-                .filter(point -> !incomingPointCodes.contains(point.getPointCode()))
-                .toList();
-
-        // 3. 寫入前檢查參照；歷史任務及過期鎖定仍有外鍵，不可直接刪除節點。
-        if (!pointsToDelete.isEmpty()) {
-            Set<String> referencedPointCodes = new HashSet<>(
-                    pointRepository.findReferencedPointCodes(mapCode));
-            List<String> blockedPointCodes = pointsToDelete.stream()
-                    .map(RcsPoint::getPointCode)
-                    .filter(referencedPointCodes::contains)
-                    .sorted()
-                    .toList();
-            if (!blockedPointCodes.isEmpty()) {
-                throw new IllegalArgumentException("導航點仍被車輛、任務或鎖定紀錄參照，無法刪除："
-                        + String.join("、", blockedPointCodes));
-            }
-        }
-
-        // 4. 保留主檔建立時間，切換啟用地圖前先同步停用舊地圖，避免唯一索引衝突。
-        mapRepository.findById(mapCode).ifPresent(existing -> map.setCreatedAt(existing.getCreatedAt()));
-        if (Boolean.TRUE.equals(map.getIsActive())) {
-            mapRepository.findByIsActiveTrue().ifPresent(existingActive -> {
-                if (!existingActive.getMapCode().equals(mapCode)) {
-                    existingActive.setIsActive(false);
-                    mapRepository.saveAndFlush(existingActive);
-                }
-            });
-        }
-        RcsMap savedMap = mapRepository.saveAndFlush(map);
-
-        // 5. 原節點直接更新欄位，保留複合主鍵與建立時間；新節點才建立新實體。
-        List<RcsPoint> pointsToSave = new ArrayList<>();
-        for (RcsPoint incoming : mapData.getPoints()) {
-            RcsPoint point = existingPoints.get(incoming.getPointCode());
-            if (point == null) {
-                point = new RcsPoint();
-                point.setMapCode(mapCode);
-                point.setPointCode(incoming.getPointCode());
-            }
-            point.setX(incoming.getX());
-            point.setY(incoming.getY());
-            point.setZ(incoming.getZ());
-            point.setPointType(incoming.getPointType());
-            point.setHeadingAngle(incoming.getHeadingAngle());
-            point.setNeighbors(incoming.getNeighbors());
-            point.setMaxSpeed(incoming.getMaxSpeed());
-            point.setIsDisabled(incoming.getIsDisabled());
-            pointsToSave.add(point);
-        }
-        List<RcsPoint> savedPoints = pointRepository.saveAll(pointsToSave);
-        pointRepository.deleteAll(pointsToDelete);
-        // 外鍵仍是最後一道保護；若參照在檢查後新增，刪除失敗會回滾整筆交易。
-        pointRepository.flush();
-
-        // 6. 環境物件維持整批替換；本次改造只調整導航點同步方式。
-        mapObjectRepository.deleteByMapCode(mapCode);
-        for (RcsMapObject object : mapData.getObjects()) {
-            object.setMapCode(mapCode);
-            object.setId(null);
-        }
-        List<RcsMapObject> savedObjects = mapObjectRepository.saveAll(mapData.getObjects());
-
-        return new MapDataDto(savedMap, savedPoints, savedObjects);
+        MapDataDto saved = withMetadata(input, version, active);
+        // 版本內容不儲存可變的啟用狀態；回傳時以主檔狀態覆蓋。
+        String text = json.toJson(withMetadata(saved, version, false));
+        long contentId = repository.appendContent(code, version, store.compress(text), store.digest(text));
+        repository.updateCurrent(saved.map(), contentId);
+        MapGraph graph = MapGraph.from(contentId, saved);
+        afterCommit(() -> {
+            store.cache(contentId, text);
+            if (Boolean.TRUE.equals(saved.map().isActive())) activeGraph = graph;
+        });
+        return saved;
     }
 
-    /**
-     * 從原始 JSON 字串直接匯入並儲存完整地圖資料
-     *
-     * @param jsonString 地圖原始 JSON 字串 (來自檔案或請求主體)
-     * @return 儲存後的 MapDataDto 封裝物件
-     */
     @Transactional
-    public MapDataDto importMapFromJson(String jsonString) {
-        if (jsonString == null || jsonString.trim().isEmpty()) {
-            throw new IllegalArgumentException("匯入的地圖 JSON 字串不可為空");
-        }
-        MapDataDto mapData = MapParseJson.parseJson(jsonString);
-        return saveMapData(mapData);
+    public MapDataDto activate(String code, int expectedVersion) {
+        lockMapChanges();
+        MapGraph graph = loadCurrent(code);
+        if (graph.document().map().version() != expectedVersion)
+            throw new IllegalStateException("地圖版本已變更，請重新載入清單");
+        var previous = repository.activeMapCodes();
+        for (String old : previous) if (!old.equals(code)) ensureUnused(old);
+        // 離線地圖也可能已放車；僅允許其參照目前版本。
+        if (repository.hasVehicleVersionMismatch(code, graph.contentId()))
+            throw new IllegalStateException("車輛參照的地圖版本不一致");
+        repository.activate(code);
+        MapDataDto result = withMetadata(graph.document(), expectedVersion, true);
+        MapGraph online = MapGraph.from(graph.contentId(), result);
+        afterCommit(() -> activeGraph = online);
+        return result;
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> versions(String code) {
+        return repository.versions(code);
+    }
+
+    @Transactional(readOnly = true)
+    public MapDataDto getVersion(String code, int version) {
+        var row = repository.version(code, version).orElseThrow(() -> new NoSuchElementException("找不到指定地圖版本"));
+        return json.parseJson(store.read(row.id(), row.content(), row.sha256()));
+    }
+
+    @Transactional(readOnly = true)
+    public MapGraph getGraph(String code) { return loadCurrent(code); }
+
+    @Transactional
+    public MapDataDto importMapFromJson(String text) {
+        if (text == null || text.isBlank()) throw new IllegalArgumentException("地圖 JSON 不可為空");
+        return saveMapData(json.parseJson(text));
+    }
+
+    private void ensureUnused(String code) {
+        if (repository.isInUse(code)) throw new IllegalStateException("地圖仍有車輛、未完成任務或鎖定，請先移除後再修改或切換");
+    }
+
+    private MapDataDto withMetadata(MapDataDto data, int version, boolean active) {
+        var m = data.map();
+        return new MapDataDto(new MapInfo(m.mapCode(), m.mapName(), version, active, m.width(), m.height(),
+                m.originX() == null ? 0.0 : m.originX(), m.originY() == null ? 0.0 : m.originY(), m.context()),
+                data.pointList(), data.lineList(), data.objects());
+    }
+
+    private void afterCommit(Runnable action) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { action.run(); }
+        });
     }
 }

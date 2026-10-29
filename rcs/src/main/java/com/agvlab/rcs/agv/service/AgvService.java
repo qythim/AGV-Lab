@@ -1,9 +1,7 @@
 package com.agvlab.rcs.agv.service;
 import org.springframework.stereotype.Service;
 import com.agvlab.rcs.agv.repository.RcsAgvRepository;
-import com.agvlab.rcs.map.repository.RcsPointRepository;
-import com.agvlab.rcs.map.entity.RcsPoint;
-import com.agvlab.rcs.map.entity.RcsPointId;
+import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.agv.entity.RcsAgv;
 import com.agvlab.rcs.agv.dto.AgvResponse;
 import com.agvlab.rcs.agv.dto.PlaceAgvRequest;
@@ -15,11 +13,11 @@ import java.util.NoSuchElementException;
 @Service
 public class AgvService {
     private final RcsAgvRepository rcsAgvRepository;
-    private final RcsPointRepository rcsPointRepository;
+    private final MapService mapService;
 
-    public AgvService(RcsAgvRepository rcsAgvRepository, RcsPointRepository rcsPointRepository) {
+    public AgvService(RcsAgvRepository rcsAgvRepository, MapService mapService) {
         this.rcsAgvRepository = rcsAgvRepository;
-        this.rcsPointRepository = rcsPointRepository;   
+        this.mapService = mapService;
     }
 
     public RcsAgv createAgv(String agvCode, String agvName, String agvType) {
@@ -96,26 +94,24 @@ public class AgvService {
         if (placeAgvRequest.pointCode() == null || placeAgvRequest.pointCode().isBlank()) {
             throw new IllegalArgumentException("點位代碼不可為空");
         }
+        mapService.lockMapChanges();
         RcsAgv agv = rcsAgvRepository.findById(agvCode)
             .orElseThrow(() -> new NoSuchElementException("找不到指定的 AGV 代碼: " + agvCode));
 
         if(agv.getCurrentMapCode() != null) {
             throw new IllegalStateException("AGV " + agvCode + " 已經在地圖上，無法重新放置");
         }
-        RcsPoint point = rcsPointRepository.findById(
-        new RcsPointId(placeAgvRequest.mapCode(), placeAgvRequest.pointCode())
-            ).orElseThrow(() -> new NoSuchElementException("找不到指定的點位代碼"));
-
-        if (Boolean.TRUE.equals(point.getIsDisabled())) {
-            throw new IllegalStateException("點位已停用，無法放置 AGV");
-        }
+        var graph = mapService.getGraph(placeAgvRequest.mapCode());
+        var point = graph.nodeByCode().get(placeAgvRequest.pointCode());
+        if (point == null) throw new NoSuchElementException("找不到指定的點位代碼");
         if (rcsAgvRepository.existsByCurrentMapCodeAndCurrentPoint(placeAgvRequest.mapCode(), placeAgvRequest.pointCode())) {
             throw new IllegalStateException("點位已有 AGV，無法放置");
         }
 
-        agv.setPosX(point.getX());
-        agv.setPosY(point.getY());
-        agv.setAngle(point.getHeadingAngle());
+        agv.setMapContentId(graph.contentId());
+        agv.setPosX(point.x());
+        agv.setPosY(point.y());
+        agv.setAngle(0.0);
         agv.setCurrentMapCode(placeAgvRequest.mapCode());
         agv.setCurrentPoint(placeAgvRequest.pointCode());
         return rcsAgvRepository.saveAndFlush(agv);
@@ -123,6 +119,7 @@ public class AgvService {
 
     @Transactional
     public RcsAgv unplaceAgv(String agvCode) {
+        mapService.lockMapChanges();
         RcsAgv agv = rcsAgvRepository.findById(agvCode)
             .orElseThrow(() -> new NoSuchElementException("找不到指定的 AGV 代碼: " + agvCode));
 
@@ -139,6 +136,7 @@ public class AgvService {
             throw new IllegalStateException("AGV " + agvCode + " 尚有點位鎖定，無法移出地圖");
         }
 
+        agv.setMapContentId(null);
         agv.setCurrentMapCode(null);
         agv.setCurrentPoint(null);
         agv.setPosX(null);

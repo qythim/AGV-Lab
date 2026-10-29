@@ -7,6 +7,12 @@ import java.time.OffsetDateTime;
 @Table(name = "rcs_task")
 public class RcsTask extends BaseAuditEntity {
 
+    @Column(name = "map_content_id", nullable = false)
+    private Long mapContentId;
+
+    public Long getMapContentId() { return mapContentId; }
+    public void setMapContentId(Long value) { mapContentId = value; }
+
     @Id
     @Column(name = "task_code", length = 64, nullable = false)
     private String taskCode;

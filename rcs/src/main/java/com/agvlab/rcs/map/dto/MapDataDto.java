@@ -1,50 +1,32 @@
 package com.agvlab.rcs.map.dto;
 
-import com.agvlab.rcs.map.entity.RcsMap;
-import com.agvlab.rcs.map.entity.RcsMapObject;
-import com.agvlab.rcs.map.entity.RcsPoint;
-import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 靜態地圖資料傳輸物件 (DTO)：
- * 整合地圖核心設定、導航路徑點拓撲清單以及 3D 障礙物/物件清單。
- */
-public class MapDataDto {
-
-    private RcsMap map;
-    private List<RcsPoint> points = new ArrayList<>();
-    private List<RcsMapObject> objects = new ArrayList<>();
-
-    public MapDataDto() {}
-
-    public MapDataDto(RcsMap map, List<RcsPoint> points, List<RcsMapObject> objects) {
-        this.map = map;
-        this.points = points != null ? points : new ArrayList<>();
-        this.objects = objects != null ? objects : new ArrayList<>();
+/** 地圖文件與持久化實體分離；所有距離使用公尺。 */
+public record MapDataDto(MapInfo map, List<PointDto> pointList, List<LineDto> lineList,
+                         List<MapObjectDto> objects) {
+    public MapDataDto {
+        pointList = immutable(pointList);
+        lineList = immutable(lineList);
+        objects = immutable(objects);
     }
-
-    public RcsMap getMap() {
-        return map;
+    private static <T> List<T> immutable(List<T> values) {
+        if (values == null) return null;
+        if (values.stream().anyMatch(java.util.Objects::isNull)) throw new IllegalArgumentException("清單項目不可為 null");
+        return List.copyOf(values);
     }
-
-    public void setMap(RcsMap map) {
-        this.map = map;
+    public record MapInfo(String mapCode, String mapName, Integer version, Boolean isActive,
+                          Double width, Double height, Double originX, Double originY, String context) {}
+    public record PointDto(String pointCode, String pointType, String pointName, Double x, Double y) {}
+    public record LineDto(String lineCode, String startPointCode, String endPointCode,
+                          String robotType, List<String> robotCarrierState, Double maxSpeed,
+                          Boolean stoppable, List<String> allowedTravelModes) {
+        public LineDto {
+            robotCarrierState = immutable(robotCarrierState);
+            allowedTravelModes = immutable(allowedTravelModes);
+        }
     }
-
-    public List<RcsPoint> getPoints() {
-        return points;
-    }
-
-    public void setPoints(List<RcsPoint> points) {
-        this.points = points;
-    }
-
-    public List<RcsMapObject> getObjects() {
-        return objects;
-    }
-
-    public void setObjects(List<RcsMapObject> objects) {
-        this.objects = objects;
-    }
+    public record MapObjectDto(Long id, String mapCode, String objectType, Double posX, Double posY,
+                               Double posZ, Double rotation, Double length, Double width,
+                               Double height, Integer rackLevels) {}
 }

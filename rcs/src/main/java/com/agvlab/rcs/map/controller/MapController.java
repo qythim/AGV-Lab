@@ -1,7 +1,7 @@
 package com.agvlab.rcs.map.controller;
 
 import com.agvlab.rcs.map.dto.MapDataDto;
-import com.agvlab.rcs.map.entity.RcsMap;
+import java.util.Map;
 import com.agvlab.rcs.map.service.MapService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -78,5 +78,21 @@ public class MapController {
     @PostMapping(value = "/import", consumes = {MediaType.APPLICATION_JSON_VALUE, MediaType.TEXT_PLAIN_VALUE}, produces = MediaType.APPLICATION_JSON_VALUE)
     public MapDataDto importMap(@RequestBody String jsonString) {
         return mapService.importMapFromJson(jsonString);
+    }
+    public record ActivateRequest(int version) {}
+
+    @PutMapping("/{mapCode}/activate")
+    public MapDataDto activate(@PathVariable String mapCode, @RequestBody ActivateRequest request) {
+        return mapService.activate(mapCode, request.version());
+    }
+
+    @GetMapping("/{mapCode}/versions")
+    public List<Map<String, Object>> versions(@PathVariable String mapCode) {
+        return mapService.versions(mapCode);
+    }
+
+    @GetMapping("/{mapCode}/versions/{version}")
+    public MapDataDto version(@PathVariable String mapCode, @PathVariable int version) {
+        return mapService.getVersion(mapCode, version);
     }
 }

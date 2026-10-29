@@ -15,3 +15,6 @@ target/
 
 管理docker.txt
 command/
+
+# Rebuildable map JSON cache
+/rcs/map_storage/

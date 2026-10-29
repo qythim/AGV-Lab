@@ -10,6 +10,12 @@ import jakarta.persistence.Table;
 @Table(name = "rcs_agv")
 public class RcsAgv extends BaseAuditEntity {
 
+    @Column(name = "map_content_id")
+    private Long mapContentId;
+
+    public Long getMapContentId() { return mapContentId; }
+    public void setMapContentId(Long value) { mapContentId = value; }
+
     @Id
     @Column(name = "agv_code", length = 64, nullable = false)
     private String agvCode;

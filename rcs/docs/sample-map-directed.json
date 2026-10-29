@@ -1,0 +1,126 @@
+{
+  "map": {
+    "mapCode": "FACTORY_01",
+    "mapName": "Nha May Thong Minh AGV-Lab Khu A",
+    "version": 1,
+    "isActive": true,
+    "width": 100.0,
+    "height": 80.0,
+    "originX": 0.0,
+    "originY": 0.0,
+    "context": ""
+  },
+  "pointList": [
+    {
+      "pointCode": "P_01",
+      "pointType": "NORMAL",
+      "pointName": "儲位點 01",
+      "x": 1.0,
+      "y": 1.0
+    },
+    {
+      "pointCode": "P_02",
+      "pointType": "NORMAL",
+      "pointName": "儲位點 02",
+      "x": 2.0,
+      "y": 1.0
+    },
+    {
+      "pointCode": "P_CHG_01",
+      "pointType": "CHARGER",
+      "pointName": "充電停靠點 01",
+      "x": 8.0,
+      "y": 10.0
+    }
+  ],
+  "lineList": [
+    {
+      "lineCode": "L_001",
+      "startPointCode": "P_01",
+      "endPointCode": "P_02",
+      "robotType": "ALL",
+      "robotCarrierState": [
+        "EMPTY",
+        "LOADED"
+      ],
+      "maxSpeed": 1.5,
+      "stoppable": true,
+      "allowedTravelModes": [
+        "FORWARD",
+        "REVERSE"
+      ]
+    },
+    {
+      "lineCode": "L_002",
+      "startPointCode": "P_02",
+      "endPointCode": "P_01",
+      "robotType": "ALL",
+      "robotCarrierState": [
+        "EMPTY",
+        "LOADED"
+      ],
+      "maxSpeed": 1.5,
+      "stoppable": true,
+      "allowedTravelModes": [
+        "FORWARD",
+        "REVERSE"
+      ]
+    },
+    {
+      "lineCode": "L_003",
+      "startPointCode": "P_02",
+      "endPointCode": "P_CHG_01",
+      "robotType": "STANDARD",
+      "robotCarrierState": [
+        "EMPTY"
+      ],
+      "maxSpeed": 1.0,
+      "stoppable": false,
+      "allowedTravelModes": [
+        "FORWARD",
+        "REVERSE"
+      ]
+    }
+  ],
+  "objects": [
+    {
+      "id": 1,
+      "mapCode": "FACTORY_01",
+      "objectType": "WALL",
+      "posX": 0.0,
+      "posY": 40.0,
+      "posZ": 0.0,
+      "rotation": 0.0,
+      "length": 1.0,
+      "width": 80.0,
+      "height": 4.0,
+      "rackLevels": 1
+    },
+    {
+      "id": 2,
+      "mapCode": "FACTORY_01",
+      "objectType": "RACK",
+      "posX": 50.0,
+      "posY": 10.0,
+      "posZ": 0.0,
+      "rotation": 90.0,
+      "length": 3.0,
+      "width": 1.5,
+      "height": 3.5,
+      "rackLevels": 3
+    },
+    {
+      "id": 3,
+      "mapCode": "FACTORY_01",
+      "objectType": "CHARGER",
+      "posX": 10.0,
+      "posY": 10.0,
+      "posZ": 0.0,
+      "rotation": 0.0,
+      "length": 1.2,
+      "width": 1.0,
+      "height": 1.8,
+      "rackLevels": 1
+    }
+  ]
+}

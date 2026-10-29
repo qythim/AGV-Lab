@@ -30,7 +30,7 @@ public class MapParseJson {
         try {
             return objectMapper.readValue(jsonString, MapDataDto.class);
         } catch (JacksonException e) {
-            throw new RuntimeException("地圖 JSON 解析失敗: " + e.getMessage(), e);
+            throw new IllegalArgumentException("地圖 JSON 解析失敗: " + e.getMessage(), e);
         }
     }
 
@@ -44,7 +44,7 @@ public class MapParseJson {
         try {
             return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(mapData);
         } catch (JacksonException e) {
-            throw new RuntimeException("地圖資料轉為 JSON 失敗: " + e.getMessage(), e);
+            throw new IllegalArgumentException("地圖資料轉為 JSON 失敗: " + e.getMessage(), e);
         }
     }
 }

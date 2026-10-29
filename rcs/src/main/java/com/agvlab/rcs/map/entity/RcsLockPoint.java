@@ -12,6 +12,12 @@ import java.time.OffsetDateTime;
 )
 public class RcsLockPoint {
 
+    @Column(name = "map_content_id", nullable = false)
+    private Long mapContentId;
+
+    public Long getMapContentId() { return mapContentId; }
+    public void setMapContentId(Long value) { mapContentId = value; }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
