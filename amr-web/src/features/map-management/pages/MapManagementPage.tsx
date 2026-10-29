@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { App, Badge, Button, ConfigProvider, Descriptions, Drawer, Input, Space, Table, Tag, Upload, theme } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { CheckCircleOutlined, EyeOutlined, ImportOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, EditOutlined, EyeOutlined, ImportOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNotify } from '../../../shared/hooks/useNotify'
 import { fetchMapList, importMap, saveMap } from '../api/mapApi'
 import AgvManagement from '../components/AgvManagement'
@@ -10,9 +10,10 @@ import './MapManagementPage.css'
 
 interface MapManagementPageProps {
   onOpenViewer: (mapCode?: string) => void
+  onOpenEditor: (mapCode: string) => void
 }
 
-export default function MapManagementPage({ onOpenViewer }: MapManagementPageProps) {
+export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapManagementPageProps) {
   const notify = useNotify()
   const { modal } = App.useApp()
   const [mapList, setMapList] = useState<MapDataDto[]>([])
@@ -113,10 +114,11 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
     { title: '場景物件', key: 'objects', width: 110, render: (_, record) => record.objects?.length ?? 0 },
     { title: '狀態', dataIndex: ['map', 'isActive'], key: 'isActive', width: 100, render: (active: boolean) => <Badge status={active ? 'success' : 'default'} text={active ? '啟用中' : '未啟用'} /> },
     {
-      title: '操作', key: 'actions', width: 250,
+      title: '操作', key: 'actions', width: 325,
       render: (_, record) => <Space size={0} split={<span className="map-action-divider" />}>
         <Button type="link" size="small" onClick={() => { setSelectedMap(record); setDrawerOpen(true) }}>詳細資訊</Button>
         <Button type="link" size="small" onClick={() => onOpenViewer(record.map.mapCode)}>開啟 3D</Button>
+        <Button type="link" size="small" onClick={() => onOpenEditor(record.map.mapCode)}>編輯地圖</Button>
         {!record.map.isActive && <Button type="link" size="small" onClick={() => handleActivate(record)}>啟用</Button>}
       </Space>,
     },
@@ -211,8 +213,9 @@ export default function MapManagementPage({ onOpenViewer }: MapManagementPagePro
               { key: 'points', label: '路徑點', children: `${selectedMap.points?.length ?? 0} 個` },
               { key: 'objects', label: '場景物件', children: `${selectedMap.objects?.length ?? 0} 個` },
             ]} />
-            <Space className="map-management-drawer-actions">
+            <Space className="map-management-drawer-actions" wrap>
               <Button type="primary" icon={<EyeOutlined />} onClick={() => { setDrawerOpen(false); onOpenViewer(selectedMap.map.mapCode) }}>開啟 3D</Button>
+              <Button icon={<EditOutlined />} onClick={() => { setDrawerOpen(false); onOpenEditor(selectedMap.map.mapCode) }}>編輯地圖</Button>
               {!selectedMap.map.isActive && <Button icon={<CheckCircleOutlined />} onClick={() => { setDrawerOpen(false); handleActivate(selectedMap) }}>啟用地圖</Button>}
             </Space>
           </>}

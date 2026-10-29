@@ -5,7 +5,7 @@
 //           點位依功能類型顯示不同顏色以利辨識
 // ============================================================================
 
-import { useMemo, useRef } from 'react'
+import { useMemo } from 'react'
 import * as THREE from 'three'
 import type { ScenePoint, SceneEdge } from '../types/map3d'
 
@@ -53,14 +53,12 @@ export default function PathTopology({
     return geo
   }, [edges])
 
-  const lineMaterialRef = useRef(
-    new THREE.LineBasicMaterial({ color: '#1e40af', linewidth: 1 })
-  )
-
   return (
     <group>
       {/* 路徑連線群 (一次繪製所有邊，效能最佳) */}
-      <lineSegments geometry={lineGeometry} material={lineMaterialRef.current} />
+      <lineSegments geometry={lineGeometry}>
+        <lineBasicMaterial color="#1e40af" linewidth={1} />
+      </lineSegments>
 
       {/* 各路徑點標記 */}
       {points.map((point) => {

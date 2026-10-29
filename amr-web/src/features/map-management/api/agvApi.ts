@@ -46,3 +46,11 @@ export async function placeAgv(agvCode: string, request: PlaceAgvRequest): Promi
   })
   return await readResponse<AgvResponse>(response, '放置 AGV')
 }
+
+/** 移除 AGV 的地圖位置，保留車輛登錄資料。 */
+export async function unplaceAgv(agvCode: string): Promise<AgvResponse> {
+  const response = await fetch(`${API_BASE}/${encodeURIComponent(agvCode)}/place`, {
+    method: 'DELETE',
+  })
+  return await readResponse<AgvResponse>(response, '移出 AGV')
+}

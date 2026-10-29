@@ -6,7 +6,7 @@
 // ============================================================================
 
 /** AGV 運行狀態列舉 */
-export type AgvStatus = 'IDLE' | 'MOVING' | 'CHARGING' | 'ERROR'
+export type AgvStatus = 'OFFLINE' | 'IDLE' | 'RUNNING' | 'CHARGING' | 'ERROR'
 
 /** AGV 元件屬性定義 */
 export interface AgvProps {
@@ -17,13 +17,14 @@ export interface AgvProps {
   /** AGV 車輛識別代碼 (例：'AGV_01') */
   agvCode?: string
   /** 車輛運行狀態 (決定指示燈顏色) */
-  status?: AgvStatus
+  status?: string
 }
 
 /** 依運行狀態設定指示燈顏色 */
 const STATUS_COLORS: Record<AgvStatus, string> = {
+  OFFLINE:  '#64748b', // 離線：灰色
   IDLE:     '#10b981', // 待機：綠色
-  MOVING:   '#38bdf8', // 運行中：天藍色
+  RUNNING:  '#38bdf8', // 運行中：天藍色
   CHARGING: '#FF8C00', // 充電中：主題橘色
   ERROR:    '#ef4444', // 異常報警：紅色
 }
@@ -34,7 +35,7 @@ export default function Agv({
   agvCode = 'AGV_01',
   status = 'IDLE',
 }: AgvProps) {
-  const beaconColor = STATUS_COLORS[status] ?? STATUS_COLORS.IDLE
+  const beaconColor = STATUS_COLORS[status as AgvStatus] ?? STATUS_COLORS.OFFLINE
 
   return (
     <group name={agvCode} position={position} rotation={[0, rotationY, 0]}>

@@ -3,7 +3,7 @@ import { Alert, Badge, Button, Form, Input, Modal, Select, Space, Table, Tag } f
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useNotify } from '../../../shared/hooks/useNotify'
-import { createAgv, fetchAgvList, placeAgv } from '../api/agvApi'
+import { createAgv, fetchAgvList, placeAgv, unplaceAgv } from '../api/agvApi'
 import type { AgvResponse, CreateAgvRequest, PlaceAgvRequest } from '../types/agvDto'
 import type { MapDataDto } from '../types/mapDto'
 
@@ -20,6 +20,7 @@ export default function AgvManagement({ maps, mapsLoading, mapLoadError }: AgvMa
   const [loadError, setLoadError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [placeTarget, setPlaceTarget] = useState<AgvResponse | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<AgvResponse | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [placementMapCode, setPlacementMapCode] = useState<string | undefined>()
   const [createForm] = Form.useForm<CreateAgvRequest>()
@@ -90,16 +91,32 @@ export default function AgvManagement({ maps, mapsLoading, mapLoadError }: AgvMa
     }
   }
 
+  const handleUnplace = async () => {
+    if (!removeTarget) return
+    setSubmitting(true)
+    try {
+      const saved = await unplaceAgv(removeTarget.agvCode)
+      setAgvs(previous => previous.map(agv => agv.agvCode === saved.agvCode ? saved : agv))
+      setRemoveTarget(null)
+      notify.success(`AGV「${saved.agvCode}」已移出地圖`)
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '移出 AGV 失敗')
+      void loadAgvs()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const columns: ColumnsType<AgvResponse> = [
     { title: 'AGV 編碼', dataIndex: 'agvCode', key: 'agvCode', render: (code: string) => <span className="map-code">{code}</span> },
     { title: '名稱', dataIndex: 'agvName', key: 'agvName', render: (name: string | null) => name || '—' },
     { title: '車型', dataIndex: 'agvType', key: 'agvType', render: (type: string) => type === 'STANDARD' ? '標準型' : type === 'TELESCOPIC' ? '伸縮型' : type },
-    { title: '狀態', dataIndex: 'status', key: 'status', render: (status: string) => <Badge status={status === 'ERROR' ? 'error' : status === 'IDLE' ? 'success' : 'processing'} text={status} /> },
+    { title: '狀態', dataIndex: 'status', key: 'status', render: (status: string) => <Badge status={status === 'ERROR' ? 'error' : status === 'IDLE' ? 'success' : status === 'OFFLINE' ? 'default' : 'processing'} text={status} /> },
     { title: '目前地圖', dataIndex: 'currentMapCode', key: 'currentMapCode', render: (code: string | null) => code || <Tag>未放置</Tag> },
     { title: '目前點位', dataIndex: 'currentPoint', key: 'currentPoint', render: (code: string | null) => code || '—' },
     { title: '操作', key: 'actions', width: 120, render: (_, agv) => agv.currentMapCode
-      ? <span className="agv-placed-label">已放置</span>
-      : <Button type="link" size="small" disabled={mapsLoading || !!mapLoadError || maps.length === 0} onClick={() => openPlaceDialog(agv)}>放置於點位</Button> },
+      ? <Button type="link" size="small" danger onClick={() => setRemoveTarget(agv)}>移出地圖</Button>
+      : <Button type="link" size="small" disabled={loading || !!loadError || mapsLoading || !!mapLoadError || maps.length === 0} onClick={() => openPlaceDialog(agv)}>放置於點位</Button> },
   ]
 
   return (
@@ -178,6 +195,19 @@ export default function AgvManagement({ maps, mapsLoading, mapLoadError }: AgvMa
             />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`移出 AGV：${removeTarget?.agvCode ?? ''}`}
+        open={!!removeTarget}
+        okText="確認移出"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        confirmLoading={submitting}
+        onOk={() => void handleUnplace()}
+        onCancel={() => { if (!submitting) setRemoveTarget(null) }}
+      >
+        <p>將清除這台車的地圖、點位與座標，車輛登錄資料會保留。確定要移出地圖嗎？</p>
       </Modal>
     </section>
   )

@@ -9,7 +9,7 @@ import MapManagementPage from './features/map-management/pages/MapManagementPage
 import FactoryScene from './features/map-editor/scenes/FactoryScene'
 
 /** 應用程式頁面類型 */
-type AppPage = 'management' | '3d-viewer'
+type AppPage = 'management' | '3d-viewer' | '3d-editor'
 
 export default function App() {
   // 當前顯示頁面 (預設進入地圖管理介面)
@@ -23,16 +23,22 @@ export default function App() {
     setPage('3d-viewer')
   }
 
+  // 進入指定地圖的編輯模式
+  const handleOpenEditor = (mapCode: string) => {
+    setTargetMapCode(mapCode)
+    setPage('3d-editor')
+  }
+
   // 返回地圖管理頁面
   const handleBackToManagement = () => {
     setPage('management')
   }
 
-  if (page === '3d-viewer') {
+  if (page === '3d-viewer' || page === '3d-editor') {
     return (
       <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
         {/* 返回按鈕 */}
-        <button
+        {page === '3d-viewer' && <button
           onClick={handleBackToManagement}
           style={{
             position: 'absolute',
@@ -50,14 +56,14 @@ export default function App() {
           }}
         >
           ← 返回管理介面
-        </button>
+        </button>}
         {/* 3D 場景 */}
-        <FactoryScene mapCode={targetMapCode} />
+        <FactoryScene mapCode={targetMapCode} mode={page === '3d-editor' ? 'edit' : 'view'} onBack={handleBackToManagement} />
       </div>
     )
   }
 
   return (
-    <MapManagementPage onOpenViewer={handleOpenViewer} />
+    <MapManagementPage onOpenViewer={handleOpenViewer} onOpenEditor={handleOpenEditor} />
   )
 }

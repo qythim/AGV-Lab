@@ -13,7 +13,9 @@ import { OrbitControls, Grid } from '@react-three/drei'
 import { useNotify } from '../../../shared/hooks/useNotify'
 
 import { fetchActiveMap, fetchMapByCode, saveMap } from '../../map-management/api/mapApi'
+import { fetchAgvList } from '../../map-management/api/agvApi'
 import type { MapDataDto, MapObjectType } from '../../map-management/types/mapDto'
+import type { AgvResponse } from '../../map-management/types/agvDto'
 import { mapDtoToSceneData } from '../utils/mapCoordinateMapper'
 import { sceneDataToMapDto } from '../utils/sceneDataToMapDto'
 import type { SceneData, ScenePoint, SceneObject, SceneEdge } from '../types/map3d'
@@ -26,6 +28,7 @@ import Wall     from '../objects/Wall'
 import Charger  from '../objects/Charger'
 import Station  from '../objects/Station'
 import Conveyor from '../objects/Conveyor'
+import Agv from '../objects/Agv'
 import PathTopology from '../components/PathTopology'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,9 +38,12 @@ interface SceneHudProps {
   sceneData: SceneData | null
   error: string | null
   loading: boolean
+  agvCount: number
+  agvLoading: boolean
+  agvError: string | null
 }
 
-function SceneHud({ sceneData, error, loading }: SceneHudProps) {
+function SceneHud({ sceneData, error, loading, agvCount, agvLoading, agvError }: SceneHudProps) {
   if (loading) {
     return (
       <div style={{
@@ -72,6 +78,11 @@ function SceneHud({ sceneData, error, loading }: SceneHudProps) {
       </div>
       <div>📐 尺寸：{sceneData.floorWidth} × {sceneData.floorDepth} m</div>
       <div>📍 點位：{sceneData.points.length} 個 | 📦 物件：{sceneData.objects.length} 個</div>
+      {agvError ? (
+        <div role="alert" style={{ color: '#f87171' }}>{agvError}</div>
+      ) : (
+        <div>🚗 AGV：{agvLoading ? '載入中...' : `${agvCount} 台`}</div>
+      )}
       <div style={{ fontSize: 11, marginTop: 2 }}>
         <span style={{ color: '#10b981' }}>● RCS 後端資料</span>
       </div>
@@ -84,6 +95,8 @@ function SceneHud({ sceneData, error, loading }: SceneHudProps) {
 // ─────────────────────────────────────────────────────────────────────────────
 interface SceneContentProps {
   sceneData: SceneData
+  agvs: AgvResponse[]
+  mode: 'view' | 'edit'
   currentTool: ReturnType<typeof useMapEditorState>['currentTool']
   settings: ReturnType<typeof useMapEditorState>['settings']
   selectedTarget: ReturnType<typeof useMapEditorState>['selectedTarget']
@@ -97,6 +110,8 @@ interface SceneContentProps {
 
 function SceneContent({
   sceneData,
+  agvs,
+  mode,
   currentTool,
   settings,
   selectedTarget,
@@ -146,7 +161,7 @@ function SceneContent({
         receiveShadow
         onClick={(e) => {
           e.stopPropagation()
-          onFloorClick([e.point.x, 0.05, e.point.z])
+          if (mode === 'edit') onFloorClick([e.point.x, 0.05, e.point.z])
         }}
       >
         <planeGeometry args={[floorWidth, floorDepth]} />
@@ -168,7 +183,7 @@ function SceneContent({
         points={points}
         edges={edges}
         selectedPointCode={selectedTarget?.type === 'POINT' ? (selectedTarget.id as string) : null}
-        onSelectPoint={onPointClick}
+        onSelectPoint={mode === 'edit' ? onPointClick : undefined}
       />
 
       {/* ── 3D 環境物件 (支援點擊選取與游標懸浮提示) ───────────────────── */}
@@ -186,14 +201,15 @@ function SceneContent({
             key={key}
             onClick={(e) => {
               e.stopPropagation()
-              onSelectTarget({ type: 'OBJECT', id: obj.id })
+              if (mode === 'edit') onSelectTarget({ type: 'OBJECT', id: obj.id })
             }}
             onPointerOver={(e) => {
+              if (mode !== 'edit') return
               e.stopPropagation()
               document.body.style.cursor = 'pointer'
             }}
             onPointerOut={() => {
-              document.body.style.cursor = 'default'
+              if (mode === 'edit') document.body.style.cursor = 'default'
             }}
           >
             {/* 物件本體渲染 */}
@@ -204,7 +220,7 @@ function SceneContent({
             {obj.type === 'CONVEYOR' && <Conveyor {...commonProps} />}
 
             {/* 選取光環外框 (選取中之物件顯示青藍色外框標記) */}
-            {isSelected && (
+            {mode === 'edit' && isSelected && (
               <mesh position={obj.position} rotation={[0, obj.rotationY, 0]}>
                 <boxGeometry
                   args={[
@@ -220,8 +236,20 @@ function SceneContent({
         )
       })}
 
+      {/* AGV 由獨立 API 載入，不屬於地圖物件，也不會隨地圖儲存。 */}
+      {agvs.map((agv) => agv.posX != null && agv.posY != null && (
+        <group key={agv.agvCode} onClick={(event) => event.stopPropagation()}>
+          <Agv
+            agvCode={agv.agvCode}
+            status={agv.status}
+            position={[agv.posX, 0, agv.posY]}
+            rotationY={((agv.angle ?? 0) * Math.PI) / 180}
+          />
+        </group>
+      ))}
+
       {/* ── 3D 變形控制器 (Transform Gizmo) ────────────────────────────── */}
-      <EditorGizmo
+      {mode === 'edit' && <EditorGizmo
         currentTool={currentTool}
         settings={settings}
         selectedTarget={selectedTarget}
@@ -229,7 +257,7 @@ function SceneContent({
         onUpdatePointPosition={onUpdatePointPosition}
         onUpdateObjectTransform={onUpdateObjectTransform}
         onDraggingChange={onDraggingChange}
-      />
+      />}
     </>
   )
 }
@@ -240,13 +268,18 @@ function SceneContent({
 interface FactorySceneProps {
   /** 指定地圖編號；若未傳入則自動載入後端啟用中之地圖 */
   mapCode?: string
-  /** 返回地圖清單頁面回呼 */
-  onBack?: () => void
+  /** 檢視模式僅顯示地圖與 AGV；編輯模式才允許修改地圖。 */
+  mode?: 'view' | 'edit'
+  /** 返回地圖管理頁面回呼，避免使用瀏覽器歷史記錄離開應用程式。 */
+  onBack: () => void
 }
 
-export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
+export default function FactoryScene({ mapCode, mode = 'view', onBack }: FactorySceneProps) {
   const notify = useNotify()
   const [sceneData, setSceneData] = useState<SceneData | null>(null)
+  const [agvs, setAgvs] = useState<AgvResponse[]>([])
+  const [agvLoading, setAgvLoading] = useState(true)
+  const [agvError, setAgvError] = useState<string | null>(null)
   const [rawDto, setRawDto] = useState<MapDataDto | undefined>()
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -287,6 +320,29 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
     })
     return () => { cancelled = true }
   }, [mapCode, markClean])
+
+  // 車輛狀態獨立於地圖載入；失敗時保留已載入的地圖。
+  useEffect(() => {
+    let cancelled = false
+    fetchAgvList().then((list) => {
+      if (cancelled) return
+      setAgvs(list)
+      setAgvError(null)
+    }).catch(() => {
+      if (cancelled) return
+      setAgvs([])
+      setAgvError('無法載入 AGV，地圖仍可使用。')
+    }).finally(() => {
+      if (!cancelled) setAgvLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [mapCode])
+
+  const visibleAgvs = useMemo(() => agvs.filter((agv) =>
+    agv.currentMapCode === sceneData?.mapCode &&
+    agv.posX != null && Number.isFinite(agv.posX) &&
+    agv.posY != null && Number.isFinite(agv.posY)
+  ), [agvs, sceneData?.mapCode])
 
   // 選取點位或物件時，自動切換至平移工具顯示 Gizmo
   const handleSelectTarget = useCallback(
@@ -518,7 +574,7 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
 
   // 儲存地圖變更至後端 RCS
   const handleSaveMap = useCallback(async () => {
-    if (!sceneData) return
+    if (mode !== 'edit' || !sceneData) return
     setIsSaving(true)
     try {
       const dto = sceneDataToMapDto(sceneData, rawDto)
@@ -531,7 +587,7 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
     } finally {
       setIsSaving(false)
     }
-  }, [sceneData, rawDto, markClean, notify])
+  }, [mode, sceneData, rawDto, markClean, notify])
 
   // 切換網格吸附
   const handleToggleSnap = useCallback(() => {
@@ -550,7 +606,7 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       {/* ── 懸浮編輯工具列 ────────────────────────────────────────────── */}
-      <EditorToolbar
+      {mode === 'edit' && <EditorToolbar
         currentTool={currentTool}
         onSelectTool={setCurrentTool}
         selectedTarget={selectedTarget}
@@ -558,14 +614,14 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
         onToggleSnap={handleToggleSnap}
         hasUnsavedChanges={hasUnsavedChanges}
         onSave={handleSaveMap}
-        onBack={onBack ?? (() => window.history.back())}
+        onBack={onBack}
         onAddObject={handleAddObject}
         onDeleteSelected={handleDeleteSelected}
         isSaving={isSaving}
-      />
+      />}
 
       {/* ── HUD 覆蓋層 (畫面左下角) ──────────────────────────────────── */}
-      <SceneHud sceneData={sceneData} error={loadError} loading={loading} />
+      <SceneHud sceneData={sceneData} error={loadError} loading={loading} agvCount={visibleAgvs.length} agvLoading={agvLoading} agvError={agvError} />
 
       {/* ── Three.js Canvas ───────────────────────────────────────────── */}
       <Canvas
@@ -583,6 +639,8 @@ export default function FactoryScene({ mapCode, onBack }: FactorySceneProps) {
           {sceneData && (
             <SceneContent
               sceneData={sceneData}
+              agvs={visibleAgvs}
+              mode={mode}
               currentTool={currentTool}
               settings={settings}
               selectedTarget={selectedTarget}
