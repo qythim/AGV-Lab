@@ -416,8 +416,13 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
 
         setSceneData((prev) => {
           if (!prev) return prev
-          // const nextIndex = prev.points.length + 1
-          const nextIndex = Math.max(...prev.points.map(p => +p.code.split('_')[1])) + 1;
+          // 僅計算 P_數字格式的編號，空地圖從 P_01 開始。
+          const maxIndex = prev.points.reduce((max, point) => {
+            const match = /^P_(\d+)$/.exec(point.code)
+            const index = match ? Number(match[1]) : 0
+            return Number.isSafeInteger(index + 1) ? Math.max(max, index) : max
+          }, 0)
+          const nextIndex = maxIndex + 1
           const newCode = `P_${String(nextIndex).padStart(2, '0')}`
           const newPoint: ScenePoint = {
             code: newCode,
