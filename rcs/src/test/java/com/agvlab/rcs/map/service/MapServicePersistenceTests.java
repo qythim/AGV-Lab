@@ -1,126 +1,136 @@
 package com.agvlab.rcs.map.service;
 
 import com.agvlab.rcs.map.dto.MapDataDto;
-import com.agvlab.rcs.map.entity.RcsMap;
-import com.agvlab.rcs.map.entity.RcsPoint;
+import com.agvlab.rcs.map.dto.MapDataDto.*;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.math.BigDecimal;
-import java.time.OffsetDateTime;
-import java.util.List;
-import java.util.UUID;
-
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 使用真實 PostgreSQL 驗證外鍵；每項測試結束後回滾所有測試資料。 */
+/** 使用隔離測試資料庫驗證版本、參照及有向拓撲。 */
 @SpringBootTest
 @Transactional
 class MapServicePersistenceTests {
     @Autowired MapService service;
     @Autowired JdbcTemplate jdbc;
+    @Autowired MapContentStore store;
+    @Autowired PlatformTransactionManager transactions;
 
     @Test
-    void updatesReferencedPointWithoutDeletingItAndPreservesCreationTime() {
-        String code = "TEST_" + UUID.randomUUID();
-        MapDataDto original = service.saveMapData(map(code, point("P_01", 1)));
-        OffsetDateTime createdAt = original.getPoints().getFirst().getCreatedAt();
-        jdbc.update("INSERT INTO rcs_agv (agv_code, agv_type, current_map_code, current_point) VALUES (?, 'STANDARD', ?, 'P_01')",
-                code, code);
-
-        MapDataDto saved = service.saveMapData(map(code, point("P_01", 2), point("P_02", 3)));
-
-        assertEquals(2, saved.getPoints().size());
-        assertEquals(createdAt, saved.getPoints().getFirst().getCreatedAt());
-        assertEquals(2.0, jdbc.queryForObject(
-                "SELECT x FROM rcs_point WHERE map_code = ? AND point_code = 'P_01'", Double.class, code));
-        assertEquals("P_01", jdbc.queryForObject(
-                "SELECT current_point FROM rcs_agv WHERE agv_code = ?", String.class, code));
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void rolledBackSaveDoesNotPublishNewRuntimeVersion() {
+        String code = "COMMIT_" + UUID.randomUUID();
+        var original = service.saveMapData(map(code));
+        service.activate(code, 1);
+        service.warmActiveMap();
+        long firstId = service.getActiveGraph().contentId();
+        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(transactions).execute(status -> {
+            service.saveMapData(new MapDataDto(original.map(), original.pointList(), List.of(), List.of()));
+            throw new IllegalStateException("模擬交易回滾");
+        }));
+        assertEquals(firstId, service.getActiveGraph().contentId());
+        assertEquals(1, service.versions(code).size());
+        assertEquals(1, service.getActiveMapData().lineList().size());
     }
 
     @Test
-    void deletesOnlyOmittedUnreferencedPointsAndSupportsEmptyMap() {
+    void savesDirectedLinesAndKeepsHistoricalVersions() {
         String code = "TEST_" + UUID.randomUUID();
-        service.saveMapData(map(code, point("P_01", 1), point("P_02", 2)));
-        service.saveMapData(map(code, point("P_02", 3), point("P_03", 4)));
-        assertEquals(List.of("P_02", "P_03"), jdbc.queryForList(
-                "SELECT point_code FROM rcs_point WHERE map_code = ? ORDER BY point_code", String.class, code));
+        MapDataDto first = service.saveMapData(map(code));
+        assertFalse(first.map().isActive());
+        assertEquals(1, first.lineList().size());
+        var graph = service.getGraph(code);
+        assertEquals(1, graph.outgoingLines().get("P_01").size());
+        assertEquals(0, graph.outgoingLines().get("P_02").size());
+        MapDataDto second = service.saveMapData(new MapDataDto(first.map(), first.pointList(), List.of(), first.objects()));
+        assertEquals(2, second.map().version());
+        assertEquals(1, service.getVersion(code, 1).lineList().size());
+        assertEquals(0, service.getMapData(code).lineList().size());
+        assertEquals(2, service.versions(code).size());
+        assertThrows(IllegalStateException.class, () -> service.saveMapData(first));
+        assertEquals(2, service.versions(code).size());
+    }
 
+    @Test
+    void acceptsEmptyMapAndNeverCreatesEdgesFromNearbyCoordinates() {
+        String code = "TEST_" + UUID.randomUUID();
+        var data = map(code);
+        service.saveMapData(new MapDataDto(data.map(), data.pointList(), List.of(), List.of()));
+        assertTrue(service.getGraph(code).outgoingLines().values().stream().allMatch(List::isEmpty));
+        var current = service.getMapData(code);
+        service.saveMapData(new MapDataDto(current.map(), List.of(), List.of(), List.of()));
+        assertTrue(service.getMapData(code).pointList().isEmpty());
+    }
+
+    @Test
+    void rejectsMissingEndpointsDuplicateCodesAndInvalidVehicleType() {
+        String code = "TEST_" + UUID.randomUUID();
+        var data = map(code);
+        var invalid = new LineDto("L_01","P_01","MISSING","ALL",List.of("EMPTY"),1.0,true,List.of("FORWARD"));
+        assertThrows(IllegalArgumentException.class, () -> service.saveMapData(
+                new MapDataDto(data.map(),data.pointList(),List.of(invalid),List.of())));
+        var wrongType = new LineDto("L_01","P_01","P_02","CARRIER",List.of("EMPTY"),1.0,true,List.of("FORWARD"));
+        assertThrows(IllegalArgumentException.class, () -> service.saveMapData(
+                new MapDataDto(data.map(),data.pointList(),List.of(wrongType),List.of())));
+        assertThrows(IllegalArgumentException.class, () -> service.saveMapData(
+                new MapDataDto(data.map(),List.of(data.pointList().getFirst(),data.pointList().getFirst()),List.of(),List.of())));
+        assertThrows(IllegalArgumentException.class, () -> service.saveMapData(
+                new MapDataDto(data.map(),data.pointList(),List.of(data.lineList().getFirst(),data.lineList().getFirst()),List.of())));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM rcs_map WHERE map_code=?", Integer.class, code));
+    }
+
+    @Test
+    void blocksEditingAndMapSwitchWhileOccupied() {
+        String code = "TEST_" + UUID.randomUUID();
+        var saved = service.saveMapData(map(code));
+        service.activate(code, saved.map().version());
+        long id = service.getGraph(code).contentId();
+        jdbc.update("""
+                INSERT INTO rcs_agv(agv_code,agv_type,current_map_code,current_point,map_content_id)
+                VALUES (?,'STANDARD',?,'P_01',?)
+                """, code, code, id);
+        assertThrows(IllegalStateException.class, () -> service.saveMapData(saved));
+        String next = "TEST_" + UUID.randomUUID();
+        service.saveMapData(map(next));
+        assertThrows(IllegalStateException.class, () -> service.activate(next,1));
+        assertEquals(code, service.getActiveMapData().map().mapCode());
+        assertEquals(1, service.versions(code).size());
+    }
+
+    @Test
+    void completedTaskRetainsOriginalContentWhenMapChanges() {
+        String code = "TEST_" + UUID.randomUUID();
+        var saved = service.saveMapData(map(code));
+        long id = service.getGraph(code).contentId();
+        jdbc.update("""
+                INSERT INTO rcs_task(task_code,map_code,start_point,target_point,status,map_content_id)
+                VALUES (?,?,'P_01','P_02','COMPLETED',?)
+                """, code, code, id);
+        service.saveMapData(new MapDataDto(saved.map(),List.of(),List.of(),List.of()));
+        assertEquals(id, jdbc.queryForObject("SELECT map_content_id FROM rcs_task WHERE task_code=?", Long.class, code));
+        assertEquals(2, service.getVersion(code,1).pointList().size());
+    }
+
+    @Test
+    void activationDoesNotCreateVersionAndRejectsStaleVersion() {
+        String code = "TEST_" + UUID.randomUUID();
         service.saveMapData(map(code));
-        assertEquals(0, jdbc.queryForObject(
-                "SELECT count(*) FROM rcs_point WHERE map_code = ?", Integer.class, code));
+        assertThrows(IllegalStateException.class, () -> service.activate(code,2));
+        assertTrue(service.activate(code,1).map().isActive());
+        assertEquals(1, service.versions(code).size());
+        assertEquals(code,service.getActiveMapData().map().mapCode());
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"AGV", "TASK_START", "TASK_TARGET", "LOCK"})
-    void rejectsDeletionForEachForeignKeyBeforeChangingMap(String referenceType) {
-        String code = "TEST_" + UUID.randomUUID();
-        service.saveMapData(map(code, point("P_01", 1), point("P_02", 2)));
-        if (referenceType.equals("AGV")) {
-            jdbc.update("INSERT INTO rcs_agv (agv_code, agv_type, current_map_code, current_point) VALUES (?, 'STANDARD', ?, 'P_01')",
-                    code, code);
-        } else if (referenceType.startsWith("TASK")) {
-            // 已完成任務仍須保留參照完整性。
-            jdbc.update("INSERT INTO rcs_task (task_code, map_code, start_point, target_point, status) VALUES (?, ?, ?, ?, 'COMPLETED')",
-                    code, code, referenceType.equals("TASK_START") ? "P_01" : "P_02",
-                    referenceType.equals("TASK_TARGET") ? "P_01" : "P_02");
-        } else {
-            jdbc.update("INSERT INTO rcs_agv (agv_code, agv_type) VALUES (?, 'STANDARD')", code);
-            // 過期鎖定仍有外鍵，不能忽略。
-            jdbc.update("INSERT INTO rcs_lock_point (map_code, point_code, agv_code, lock_type, locked_at, expire_at) VALUES (?, 'P_01', ?, 'RESERVED', CURRENT_TIMESTAMP - INTERVAL '2 hours', CURRENT_TIMESTAMP - INTERVAL '1 hour')",
-                    code, code);
-        }
-        MapDataDto request = map(code, point("P_02", 99));
-        request.getMap().setMapName("不應儲存的名稱");
-
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> service.saveMapData(request));
-
-        assertTrue(error.getMessage().contains("P_01"));
-        assertEquals("測試倉庫", jdbc.queryForObject(
-                "SELECT map_name FROM rcs_map WHERE map_code = ?", String.class, code));
-        assertEquals(2.0, jdbc.queryForObject(
-                "SELECT x FROM rcs_point WHERE map_code = ? AND point_code = 'P_02'", Double.class, code));
-    }
-
-    @Test
-    void rejectsDuplicateCodesBeforeCreatingMap() {
-        String code = "TEST_" + UUID.randomUUID();
-        assertThrows(IllegalArgumentException.class,
-                () -> service.saveMapData(map(code, point("P_01", 1), point("P_01", 2))));
-        assertEquals(0, jdbc.queryForObject(
-                "SELECT count(*) FROM rcs_map WHERE map_code = ?", Integer.class, code));
-    }
-
-    @Test
-    void switchesActiveMapWithoutViolatingUniqueIndex() {
-        String code = "TEST_" + UUID.randomUUID();
-        MapDataDto request = map(code);
-        request.getMap().setIsActive(true);
-        service.saveMapData(request);
-        assertEquals(code, jdbc.queryForObject(
-                "SELECT map_code FROM rcs_map WHERE is_active = true", String.class));
-        String nextCode = "TEST_" + UUID.randomUUID();
-        MapDataDto next = map(nextCode);
-        next.getMap().setIsActive(true);
-        service.saveMapData(next);
-        assertEquals(nextCode, jdbc.queryForObject(
-                "SELECT map_code FROM rcs_map WHERE is_active = true", String.class));
-    }
-
-    private MapDataDto map(String code, RcsPoint... points) {
-        RcsMap map = new RcsMap(code, "測試倉庫");
-        map.setWidth(BigDecimal.valueOf(20));
-        map.setHeight(BigDecimal.valueOf(15));
-        return new MapDataDto(map, List.of(points), List.of());
-    }
-
-    private RcsPoint point(String code, double x) {
-        return new RcsPoint("IGNORED", code, x, 1.0, "NORMAL");
+    private MapDataDto map(String code) {
+        return new MapDataDto(new MapInfo(code,"測試地圖",1,true,20.0,15.0,0.0,0.0,""),
+                List.of(new PointDto("P_01","NORMAL","起點",1.0,2.0),new PointDto("P_02","NORMAL","終點",3.0,2.0)),
+                List.of(new LineDto("L_01","P_01","P_02","TELESCOPIC",List.of("EMPTY"),0.5,false,List.of("REVERSE"))),
+                List.of());
     }
 }
