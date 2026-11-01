@@ -10,8 +10,8 @@ export function useNotify() {
     success: (description: ReactNode) => notification.success({
       title: '操作成功', description, duration: 4, role: 'status',
     }),
-    info: (description: ReactNode) => notification.info({
-      title: '操作提示', description, duration: 4, role: 'status',
+    info: (description: ReactNode, key?: string) => notification.info({
+      title: '操作提示', description, key, duration: 4, role: 'status',
     }),
     warning: (description: ReactNode) => notification.warning({
       title: '請注意', description, duration: 6, role: 'alert',

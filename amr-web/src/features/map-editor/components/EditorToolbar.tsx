@@ -100,17 +100,17 @@ export default function EditorToolbar({
     onSelectTool(tool)
     switch (tool) {
       case 'select':
-        notify.info('🎯 選取模式：點選地圖上的路徑點或 3D 物件即可檢視或調整')
+        notify.info('🎯 選取模式：點選路線可刪除，點選路徑點或 3D 物件可調整')
         break
       case 'translate':
-        if (!selectedTarget) {
+        if (!selectedTarget || selectedTarget.type === 'LINE') {
           notify.warning('💡 請先點選地圖上的路徑點或 3D 物件，即可顯示變形軸進行拖曳！')
         } else {
           notify.info('↔️ 平移模式：拖曳紅色(X)或藍色(Z)箭頭即可移動位置')
         }
         break
       case 'rotate':
-        if (!selectedTarget) {
+        if (!selectedTarget || selectedTarget.type === 'LINE') {
           notify.warning('💡 請先點選一個 3D 物件，即可顯示旋轉軸進行角度調整！')
         } else {
           notify.info('🔄 旋轉模式：拖曳圓環即可旋轉物件方向')
@@ -253,7 +253,7 @@ export default function EditorToolbar({
         </Dropdown>
 
         {/* ── 刪除選取項目 ── */}
-        <Tooltip title="刪除當前選取之點位或物件 (Delete)">
+        <Tooltip title="刪除當前選取之路線、點位或物件 (Delete)">
           <Button
             type="text"
             icon={<DeleteOutlined />}

@@ -20,6 +20,7 @@ import type { AgvResponse } from '../../map-management/types/agvDto'
 import { mapDtoToSceneData } from '../utils/mapCoordinateMapper'
 import { sceneDataToMapDto } from '../utils/sceneDataToMapDto'
 import type { SceneData, ScenePoint, SceneObject, SceneEdge } from '../types/map3d'
+import type { SelectedTarget } from '../types/editor'
 import { useMapEditorState } from '../hooks/useMapEditorStore'
 import EditorToolbar from '../components/EditorToolbar'
 import EditorGizmo from '../components/EditorGizmo'
@@ -101,7 +102,7 @@ interface SceneContentProps {
   currentTool: ReturnType<typeof useMapEditorState>['currentTool']
   settings: ReturnType<typeof useMapEditorState>['settings']
   selectedTarget: ReturnType<typeof useMapEditorState>['selectedTarget']
-  onSelectTarget: (target: { type: 'POINT' | 'OBJECT'; id: string | number }) => void
+  onSelectTarget: (target: SelectedTarget) => void
   onFloorClick: (point3D: [number, number, number]) => void
   onPointClick: (code: string) => void
   onUpdatePointPosition: (code: string, newPos: [number, number, number]) => void
@@ -184,7 +185,11 @@ function SceneContent({
         points={points}
         edges={edges}
         selectedPointCode={selectedTarget?.type === 'POINT' ? (selectedTarget.id as string) : null}
+        selectedLineCode={selectedTarget?.type === 'LINE' ? (selectedTarget.id as string) : null}
+        showLabels={settings.showLabels}
         onSelectPoint={mode === 'edit' ? onPointClick : undefined}
+        onSelectLine={mode === 'edit' && ['select', 'translate', 'rotate', 'delete'].includes(currentTool)
+          ? code => onSelectTarget({ type: 'LINE', id: code }) : undefined}
       />
 
       {/* ── 3D 環境物件 (支援點擊選取與游標懸浮提示) ───────────────────── */}
@@ -239,7 +244,8 @@ function SceneContent({
 
       {/* AGV 由獨立 API 載入，不屬於地圖物件，也不會隨地圖儲存。 */}
       {agvs.map((agv) => agv.posX != null && agv.posY != null && (
-        <group key={agv.agvCode} onClick={(event) => event.stopPropagation()}>
+        // 編輯模式不註冊車輛事件，讓射線直接命中車輛下方的點位、路線或地板。
+        <group key={agv.agvCode} onClick={mode === 'view' ? event => event.stopPropagation() : undefined}>
           <Agv
             agvCode={agv.agvCode}
             status={agv.status}
@@ -347,14 +353,20 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
 
   // 選取點位或物件時，自動切換至平移工具顯示 Gizmo
   const handleSelectTarget = useCallback(
-    (target: { type: 'POINT' | 'OBJECT'; id: string | number }) => {
+    (target: SelectedTarget) => {
       setSelectedTarget(target)
-      if (currentTool === 'select') {
+      if (target.type === 'LINE') {
+        setCurrentTool('select')
+      } else if (currentTool === 'select') {
         setCurrentTool('translate')
       }
-      notify.info(`已選取 ${target.type === 'POINT' ? '路徑點' : '3D 物件'}：${target.id}，變形軸已就緒`)
+      if (selectedTarget?.type === target.type && selectedTarget.id === target.id) return
+      const description = target.type === 'LINE'
+        ? `已選取路線：${target.id}，可按工具列刪除`
+        : `已選取 ${target.type === 'POINT' ? '路徑點' : '3D 物件'}：${target.id}，變形軸已就緒`
+      notify.info(description, 'map-editor-selection')
     },
-    [currentTool, setCurrentTool, setSelectedTarget, notify]
+    [currentTool, selectedTarget, setCurrentTool, setSelectedTarget, notify]
   )
 
   // 點擊路徑點 (處理連線邊或選取)
@@ -367,20 +379,22 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
         } else if (pendingEdgeStart === code) {
           notify.warning('⚠️ 起點與終點不能為同一個路徑點')
         } else {
-          // 建立連線邊
-          setSceneData((prev) => {
-            if (!prev) return prev
-            const p1 = prev.points.find((p) => p.code === pendingEdgeStart)
-            const p2 = prev.points.find((p) => p.code === code)
-            if (!p1 || !p2) return prev
+          if (!sceneData) return
+          const p1 = sceneData.points.find(p => p.code === pendingEdgeStart)
+          const p2 = sceneData.points.find(p => p.code === code)
+          if (!p1 || !p2) return
 
-            const edgeExists = prev.edges.some(e =>
-              e.startPointCode === p1.code && e.endPointCode === p2.code
-            )
-            if (edgeExists) {
-              notify.warning('此方向的路線已存在')
-              return prev
-            }
+          const edgeExists = sceneData.edges.some(e =>
+            e.startPointCode === p1.code && e.endPointCode === p2.code
+          )
+          setPendingEdgeStart(null)
+          if (edgeExists) {
+            notify.warning('此方向的路線已存在')
+            return
+          }
+          // 更新函式僅計算資料，通知在事件處理器中執行一次。
+          setSceneData(prev => {
+            if (!prev) return prev
             let index = 1
             const codes = new Set(prev.edges.map(e => e.lineCode))
             while (codes.has(`L_${String(index).padStart(3, '0')}`)) index++
@@ -394,10 +408,9 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
               stoppable: true,
               allowedTravelModes: ['FORWARD', 'REVERSE'],
             }
-            notify.success(`已建立單向路線：${p1.code} → ${p2.code}`)
             return { ...prev, edges: [...prev.edges, newEdge] }
           })
-          setPendingEdgeStart(null)
+          notify.success(`已建立單向路線：${p1.code} → ${p2.code}`)
           markDirty()
         }
         return
@@ -405,13 +418,14 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
 
       handleSelectTarget({ type: 'POINT', id: code })
     },
-    [currentTool, pendingEdgeStart, handleSelectTarget, markDirty, notify]
+    [currentTool, pendingEdgeStart, sceneData, handleSelectTarget, markDirty, notify]
   )
 
   // 點擊地面 (新增點位或取消選取)
   const handleFloorClick = useCallback(
     (point3D: [number, number, number]) => {
       if (currentTool === 'add-node') {
+        if (!sceneData) return
         // 吸附網格計算
         const snapX = settings.snapToGrid
           ? Math.round(point3D[0] / settings.gridStep) * settings.gridStep
@@ -420,28 +434,25 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
           ? Math.round(point3D[2] / settings.gridStep) * settings.gridStep
           : Number(point3D[2].toFixed(2))
 
-        setSceneData((prev) => {
-          if (!prev) return prev
-          // 僅計算 P_數字格式的編號，空地圖從 P_01 開始。
-          const maxIndex = prev.points.reduce((max, point) => {
-            const match = /^P_(\d+)$/.exec(point.code)
-            const index = match ? Number(match[1]) : 0
-            return Number.isSafeInteger(index + 1) ? Math.max(max, index) : max
-          }, 0)
-          const nextIndex = maxIndex + 1
-          const newCode = `P_${String(nextIndex).padStart(2, '0')}`
-          const newPoint: ScenePoint = {
-            code: newCode,
-            position: [snapX, 0.05, snapZ],
-            type: 'NORMAL',
-            name: newCode,
-          }
+        // 僅計算 P_數字格式的編號，空地圖從 P_01 開始。
+        const maxIndex = sceneData.points.reduce((max, point) => {
+          const match = /^P_(\d+)$/.exec(point.code)
+          const index = match ? Number(match[1]) : 0
+          return Number.isSafeInteger(index + 1) ? Math.max(max, index) : max
+        }, 0)
+        const nextIndex = maxIndex + 1
+        const newCode = `P_${String(nextIndex).padStart(2, '0')}`
+        const newPoint: ScenePoint = {
+          code: newCode,
+          position: [snapX, 0.05, snapZ],
+          type: 'NORMAL',
+          name: newCode,
+        }
 
-          notify.success(`📍 成功在 [${snapX}, ${snapZ}] 新增路徑點：${newCode}`)
-          setSelectedTarget({ type: 'POINT', id: newCode })
-          setCurrentTool('translate')
-          return { ...prev, points: [...prev.points, newPoint] }
-        })
+        setSceneData(prev => prev ? { ...prev, points: [...prev.points, newPoint] } : prev)
+        setSelectedTarget({ type: 'POINT', id: newCode })
+        setCurrentTool('translate')
+        notify.success(`📍 成功在 [${snapX}, ${snapZ}] 新增路徑點：${newCode}`)
         markDirty()
         return
       }
@@ -451,7 +462,7 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
         clearSelection()
       }
     },
-    [currentTool, settings, setSelectedTarget, setCurrentTool, clearSelection, markDirty, notify]
+    [currentTool, sceneData, settings, setSelectedTarget, setCurrentTool, clearSelection, markDirty, notify]
   )
 
   // 新增 3D 環境物件
@@ -506,11 +517,17 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
   // 刪除選取之目標
   const handleDeleteSelected = useCallback(() => {
     if (!selectedTarget) {
-      notify.warning('💡 請先點選地圖上欲刪除的路徑點或 3D 物件！')
+      notify.warning('💡 請先點選地圖上欲刪除的路線、路徑點或 3D 物件！')
       return
     }
 
-    if (selectedTarget.type === 'POINT') {
+    if (selectedTarget.type === 'LINE') {
+      const code = selectedTarget.id as string
+      setSceneData(prev => prev ? { ...prev, edges: prev.edges.filter(edge => edge.lineCode !== code) } : prev)
+      clearSelection()
+      markDirty()
+      notify.success(`🗑️ 已刪除路線 ${code}`)
+    } else if (selectedTarget.type === 'POINT') {
       const code = selectedTarget.id as string
       setSceneData((prev) => {
         if (!prev) return prev
@@ -623,6 +640,9 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
       {mode === 'edit' && sceneData && (
         <LineManagement edges={sceneData.edges} onChange={edges => {
           setSceneData(previous => previous ? { ...previous, edges } : previous)
+          if (selectedTarget?.type === 'LINE' && !edges.some(edge => edge.lineCode === selectedTarget.id)) {
+            clearSelection()
+          }
           markDirty()
         }} />
       )}

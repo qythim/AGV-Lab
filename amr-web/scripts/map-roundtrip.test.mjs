@@ -47,3 +47,16 @@ test('雙向路線保持兩筆獨立資料', () => {
 test('不存在的端點直接報錯，不靜默捨棄路線', () => {
   assert.throws(() => mapDtoToSceneData({ ...data, pointList: [] }), /路線參照不存在的點位/)
 })
+test('刪除單向路線後儲存及重新載入不會復原，也不會刪除反向路線或端點', () => {
+  const reverse = { ...data.lineList[0], lineCode: 'L_002', startPointCode: 'B', endPointCode: 'A' }
+  const input = { ...data, lineList: [...data.lineList, reverse] }
+  const scene = mapDtoToSceneData(input)
+  scene.edges = scene.edges.filter(edge => edge.lineCode !== 'L_001')
+  const saved = sceneDataToMapDto(scene, input)
+  assert.deepEqual(saved.lineList, [reverse])
+  assert.deepEqual(saved.pointList, input.pointList)
+  const reloaded = mapDtoToSceneData(saved)
+  assert.deepEqual(reloaded.edges.map(edge => edge.lineCode), ['L_002'])
+  reloaded.edges = []
+  assert.deepEqual(sceneDataToMapDto(reloaded, saved).lineList, [])
+})

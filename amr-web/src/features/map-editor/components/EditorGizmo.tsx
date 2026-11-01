@@ -40,7 +40,7 @@ export default function EditorGizmo({
   // 僅在平移或旋轉模式，且有選取目標時啟用 Gizmo
   const isEnabled =
     (currentTool === 'translate' || currentTool === 'rotate') &&
-    selectedTarget !== null
+    selectedTarget !== null && selectedTarget.type !== 'LINE'
 
   // 取得當前選取目標的實際空間坐標與角度
   const targetTransform = useCallback(() => {

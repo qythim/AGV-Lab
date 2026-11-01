@@ -14,6 +14,10 @@ export default function LineManagement({ edges, onChange }: Props) {
   const [form] = Form.useForm<LineDto>()
   const line = edges.find(edge => edge.lineCode === selected)
   const select = (edge: LineDto) => { setSelected(edge.lineCode); form.setFieldsValue(edge) }
+  const remove = (edge: LineDto) => {
+    onChange(edges.filter(item => item.lineCode !== edge.lineCode))
+    if (selected === edge.lineCode) setSelected(null)
+  }
 
   const reverse = (edge: LineDto) => {
     const codes = new Set(edges.map(item => item.lineCode))
@@ -41,7 +45,13 @@ export default function LineManagement({ edges, onChange }: Props) {
         columns={[
           { title: '路線', dataIndex: 'lineCode' },
           { title: '方向', render: (_, edge) => `${edge.startPointCode} → ${edge.endPointCode}` },
-          { title: '操作', render: (_, edge) => <Button onClick={() => select(edge)}>編輯</Button> },
+          { title: '操作', render: (_, edge) => <Space>
+            <Button onClick={() => select(edge)}>編輯</Button>
+            <Popconfirm title={`刪除路線 ${edge.lineCode}（${edge.startPointCode} → ${edge.endPointCode}）？`}
+              onConfirm={() => remove(edge)}>
+              <Button danger>刪除</Button>
+            </Popconfirm>
+          </Space> },
         ]} />
       {line && <Form form={form} layout="vertical" onFinish={values => {
         onChange(edges.map(edge => edge.lineCode === line.lineCode ? { ...edge, ...values } : edge))
@@ -64,9 +74,9 @@ export default function LineManagement({ edges, onChange }: Props) {
           <Button type="primary" htmlType="submit">套用條件</Button>
           <Button disabled={edges.some(edge => edge.startPointCode === line.endPointCode && edge.endPointCode === line.startPointCode)}
             onClick={() => reverse(line)}>新增反向路線</Button>
-          <Popconfirm title="刪除此方向的路線？" onConfirm={() => {
-            onChange(edges.filter(edge => edge.lineCode !== line.lineCode)); setSelected(null)
-          }}><Button danger>刪除路線</Button></Popconfirm>
+          <Popconfirm title="刪除此方向的路線？" onConfirm={() => remove(line)}>
+            <Button danger>刪除路線</Button>
+          </Popconfirm>
         </Space>
         <p>套用後請按工具列「儲存」寫入後端。倒車仍遵守此路線的起點 → 終點。</p>
       </Form>}

@@ -14,13 +14,13 @@ export type EditorTool =
   | 'delete'        // 刪除選取物件模式
 
 /** 當前選取的實體類型 */
-export type SelectionType = 'POINT' | 'OBJECT' | null
+export type SelectionType = 'POINT' | 'OBJECT' | 'LINE' | null
 
 /** 當前選取的目標資訊 */
 export interface SelectedTarget {
-  /** 目標種類：路徑點 (POINT) 或環境物件 (OBJECT) */
-  type: 'POINT' | 'OBJECT'
-  /** 點位代碼 (例：'P_01') 或物件資料庫編號 (例：5) */
+  /** 目標種類：路徑點、環境物件或有向路線 */
+  type: 'POINT' | 'OBJECT' | 'LINE'
+  /** 點位代碼、路線代碼或物件資料庫編號 */
   id: string | number
 }
 
