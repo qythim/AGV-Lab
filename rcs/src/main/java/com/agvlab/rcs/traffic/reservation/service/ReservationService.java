@@ -3,7 +3,7 @@ package com.agvlab.rcs.traffic.reservation.service;
 import com.agvlab.rcs.map.service.MapGraph;
 import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.traffic.reservation.service.RedisService;
-
+import com.agvlab.rcs.traffic.reservation.service.PointLockMemoryManager;
 import com.agvlab.rcs.traffic.reservation.dto.LockPointsRequest;
 import com.agvlab.rcs.traffic.reservation.dto.LockPointsResponse;
 
@@ -15,9 +15,11 @@ import java.util.ArrayList;
 public class ReservationService{
     private final MapService maps;
     private final RedisService redis;
-    public ReservationService(MapService maps, RedisService redis) { 
+    private final PointLockMemoryManager memoryManager;
+    public ReservationService(MapService maps, RedisService redis, PointLockMemoryManager memoryManager) { 
         this.maps = maps; 
         this.redis = redis;
+        this.memoryManager= memoryManager;
     }
 
     private MapGraph getValidActiveGraph(String mapCode){
@@ -41,35 +43,53 @@ public class ReservationService{
         if (request.isRelease()) {
             return release(request); // 指向放棄預約點位
         }
+        boolean memoryLocked = memoryManager.tryLockList(request.pathPoint(), request.agvCode());
+        if(memoryLocked == false){
+            return new LockPointsResponse(request.agvCode(), false,-1,List.of(), false);
+        }
         List<String> lockedPoints = new ArrayList<>();
         boolean permit = true;
         int maxIndex = -1;
         boolean isCanFollow = true;
         
-       
-        for (int i = 0; i < request.pathPoint().size(); i++) {
-            String point = request.pathPoint().get(i);
-            String holder = redis.getPoint(point);
-            // 1. 如果有其他車輛占據->停止
-            if (holder != null && !holder.equals(request.agvCode())) {
-                permit = false;
-                maxIndex = i - 1;
-                break;
-            }
-            // 2. 如果還沒有人占據
-            if (holder == null) {
-                boolean lockOk = redis.lockPoint(point, request.agvCode());
-                if (!lockOk) {
+        try {
+            for (int i = 0; i < request.pathPoint().size(); i++) {
+                String point = request.pathPoint().get(i);
+                String holder = redis.getPoint(point);
+                // 1. 如果有其他車輛占據->停止
+                if (holder != null && !holder.equals(request.agvCode())) {
                     permit = false;
                     maxIndex = i - 1;
                     break;
                 }
+                // 2. 如果還沒有人占據
+                if (holder == null) {
+                    boolean lockOk = redis.lockPoint(point, request.agvCode());
+                    if (!lockOk) {
+                        permit = false;
+                        maxIndex = i - 1;
+                        break;
+                    }
+                }
+                // 3. 成功佔據, 寫入redis
+                lockedPoints.add(point);
+                redis.addAgvPoint(request.agvCode(), point);
+                redis.addPointLock(point);
+                maxIndex = i;
             }
-            // 3. 成功佔據, 寫入redis
-            lockedPoints.add(point);
-            redis.addAgvPoint(request.agvCode(), point);
-            redis.addPointLock(point);
-            maxIndex = i;
+
+            if (!permit && !lockedPoints.isEmpty()) {
+                for (String p : lockedPoints) {
+                    redis.unlockPoint(p);
+                    redis.removeAgvPoint(request.agvCode(), p);
+                    redis.removePointLock(p);
+                }
+                lockedPoints.clear();
+            }
+
+        }
+        finally{
+            memoryManager.release(request.pathPoint(), request.agvCode());
         }
         return new LockPointsResponse(request.agvCode(), permit,maxIndex,lockedPoints, isCanFollow);
     }
