@@ -6,6 +6,8 @@ import com.agvlab.rcs.traffic.reservation.service.RedisService;
 import com.agvlab.rcs.traffic.reservation.service.PointLockMemoryManager;
 import com.agvlab.rcs.traffic.reservation.dto.LockPointsRequest;
 import com.agvlab.rcs.traffic.reservation.dto.LockPointsResponse;
+import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateRequest;
+import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
 
 import org.springframework.stereotype.Service;
 import java.util.List;
@@ -94,7 +96,7 @@ public class ReservationService{
         return new LockPointsResponse(request.agvCode(), permit,maxIndex,lockedPoints, isCanFollow);
     }
 
-    private  LockPointsResponse release(LockPointsRequest request){
+    private LockPointsResponse release(LockPointsRequest request){
         List<String> releasePoints = new ArrayList<>();
         boolean permit = true;
         int maxIndex = -1;
@@ -110,5 +112,33 @@ public class ReservationService{
             }
         }
         return new LockPointsResponse(request.agvCode(), true, releasePoints.size() - 1, releasePoints, true);
-    } 
+    }
+
+    public ProgressUpdateResponse updateProgress(ProgressUpdateRequest request){
+        int currentIndex = request.fullPath().indexOf(request.currentPoint());
+        if (currentIndex == -1) {
+            return new ProgressUpdateResponse(request.agvCode(), request.currentPoint(), false, List.of(), List.of());
+        }
+
+        int endIndex = Math.min(currentIndex + request.windowSize(), request.fullPath().size());
+        List<String> windowPoints = request.fullPath().subList(currentIndex, endIndex);
+        List<String> pointsToRelease = request.fullPath().subList(0, currentIndex);
+        
+        //釋放已經過的點位
+        LockPointsRequest releaseReq = new LockPointsRequest(request.mapCode(), request.agvCode(), true, pointsToRelease);
+        LockPointsResponse releaseResponse = release(releaseReq);
+
+        // 依照windowSize 參數申請後續的點位
+        LockPointsRequest reserveReq = new LockPointsRequest(request.mapCode(), request.agvCode(), false, windowPoints);
+        LockPointsResponse reserveResponse = reserve(reserveReq);        
+        boolean canMove= reserveResponse.resultPermit();
+
+        return new ProgressUpdateResponse(
+            request.agvCode(),
+            request.currentPoint(),
+            canMove,
+            releaseResponse.pathPoint(),  // 已經成功釋放的點位
+            reserveResponse.pathPoint()   // 當前成功鎖定並保持的安全點位
+        );
+    }
 }
