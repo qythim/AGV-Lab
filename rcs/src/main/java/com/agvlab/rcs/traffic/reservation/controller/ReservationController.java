@@ -37,4 +37,9 @@ public class ReservationController {
     public ProgressUpdateResponse updateProgress(@RequestBody ProgressUpdateRequest request) {
         return reservationService.updateProgress(request);
     }
+
+    @PostMapping("/breakdown")
+    public LockPointsResponse breakdownOffline(@RequestParam String agvCode, @RequestParam(required = false) String occupiedPoint) {
+        return reservationService.releaseExceptOccupied(agvCode, occupiedPoint);
+    }
 }

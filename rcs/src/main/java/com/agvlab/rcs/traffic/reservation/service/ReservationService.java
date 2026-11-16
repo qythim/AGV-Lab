@@ -12,6 +12,7 @@ import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
 import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Set;
 
 @Service    
 public class ReservationService{
@@ -140,5 +141,26 @@ public class ReservationService{
             releaseResponse.pathPoint(),  // 已經成功釋放的點位
             reserveResponse.pathPoint()   // 當前成功鎖定並保持的安全點位
         );
+    }
+
+    public LockPointsResponse releaseExceptOccupied(String agvCode, String occupiedPoint){
+        Set<String> holdingPoints = redis.getAgvPoints(agvCode);
+        if(holdingPoints == null || holdingPoints.isEmpty()){
+            return  new LockPointsResponse(agvCode, true, -1, List.of(), true);
+        }
+        List<String> pointsToRelease = new ArrayList<>();
+        for (String point : holdingPoints) {
+            if (!point.equals(occupiedPoint)) {
+                pointsToRelease.add(point);
+            }
+        }
+        LockPointsRequest releaseReq = new LockPointsRequest(
+            null, 
+            agvCode,
+            true, 
+            pointsToRelease
+        );
+        LockPointsResponse releaseResponse = release(releaseReq);
+        return releaseResponse;
     }
 }
