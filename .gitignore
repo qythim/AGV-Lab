@@ -18,3 +18,15 @@ command/
 
 # Rebuildable map JSON cache
 /rcs/map_storage/
+
+# ROS 2 build artifacts & logs
+ros2/ros2_ws/build/
+ros2/ros2_ws/install/
+ros2/ros2_ws/log/
+**/__pycache__/
+*.egg-info/
+*.pyc
+
+# Mosquitto runtime data/log
+mosquitto/data/
+mosquitto/log/

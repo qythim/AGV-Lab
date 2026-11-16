@@ -64,8 +64,33 @@ services:
       - ./amr-web:/app
       - node_modules:/app/node_modules
 
+  mqtt:
+    image: eclipse-mosquitto:2.0
+    container_name: AL-mqtt
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+  ros2:
+    build:
+      context: ./ros2/docker
+      dockerfile: Dockerfile
+    container_name: AL-ros2
+    restart: unless-stopped
+    working_dir: /workspace/ros2_ws
+    volumes:
+      - ./ros2/ros2_ws:/workspace/ros2_ws
+    depends_on:
+      - mqtt
+
 volumes:
   postgres_data:
   redis_data:
   maven_cache:
   node_modules:
+  mosquitto_data:
+  mosquitto_log:
