@@ -74,6 +74,13 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-redis</artifactId>
 		</dependency>	
+
+		<!-- Eclipse Paho MQTT Client: 用於與 Mosquitto 進行 VDA 5050 協議通訊 -->
+		<dependency>
+			<groupId>org.eclipse.paho</groupId>
+			<artifactId>org.eclipse.paho.client.mqttv3</artifactId>
+			<version>1.2.5</version>
+		</dependency>
 	</dependencies>
 
 	<build>

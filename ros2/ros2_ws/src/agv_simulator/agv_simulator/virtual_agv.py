@@ -12,8 +12,9 @@ class VirtualAGV(Node):
     def __init__(self):
         super().__init__('virtual_agv')
 
-        # Robot identity
-        self.robot_id = 'AGV-01'
+        # 支援 ROS 2 參數動態設定 (預設為 'AGV-01')
+        self.declare_parameter('robot_id', 'AGV-01')
+        self.robot_id = self.get_parameter('robot_id').get_parameter_value().string_value
 
         # Current robot position in ROS coordinates
         self.x = 0.0
@@ -27,13 +28,13 @@ class VirtualAGV(Node):
 
         self.task_id = None
         self.map_version = None
-
+        self.last_node_id = ''
         self.status = 'IDLE'
 
-        # Subscribe to movement commands
+        # 使用相對 Topic 名稱 (command / state)，支援 ROS 2 Namespace 多車隔離
         self.command_sub = self.create_subscription(
             String,
-            '/agv/agv01/command',
+            'command',
             self.command_callback,
             10
         )
@@ -41,7 +42,7 @@ class VirtualAGV(Node):
         # Publish robot state
         self.state_pub = self.create_publisher(
             String,
-            '/agv/agv01/state',
+            'state',
             10
         )
 
@@ -138,7 +139,7 @@ class VirtualAGV(Node):
 
                     self.x = target_x
                     self.y = target_y
-
+                    self.last_node_id = target.get('nodeId', '')
                     self.target_index += 1
 
                     if self.target_index >= len(self.waypoints):
@@ -171,7 +172,7 @@ class VirtualAGV(Node):
             },
 
             'orientation': self.yaw,
-
+            'last_node_id': self.last_node_id,
             'linear_velocity': (
                 self.speed if self.status == 'MOVING' else 0.0
             ),

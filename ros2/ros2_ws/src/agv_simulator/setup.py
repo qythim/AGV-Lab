@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'agv_simulator'
@@ -15,6 +17,10 @@ setup(
             'share/' + package_name,
             ['package.xml']
         ),
+        (
+            os.path.join('share', package_name, 'launch'),
+            glob('launch/*.launch.py')
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'virtual_agv = agv_simulator.virtual_agv:main',
+            'vda5050_bridge = agv_simulator.vda5050_bridge:main',
         ],
     },
 )
