@@ -17,6 +17,8 @@ interface PathTopologyProps {
   selectedPointCode?: string | null
   selectedLineCode?: string | null
   showLabels?: boolean
+  /** 目前被 AGV 鎖定佔用的點位對應表 (Key = pointCode, Value = agvCode) */
+  lockedPointOwnerMap?: ReadonlyMap<string, string>
   onSelectPoint?: (code: string) => void
   onSelectLine?: (code: string) => void
 }
@@ -41,6 +43,7 @@ export default function PathTopology({
   selectedPointCode,
   selectedLineCode,
   showLabels = true,
+  lockedPointOwnerMap,
   onSelectPoint,
   onSelectLine,
 }: PathTopologyProps) {
@@ -114,8 +117,13 @@ export default function PathTopology({
       {/* 各路徑點標記 */}
       {points.map((point) => {
         const isSelected = selectedPointCode === point.code
-        const color = POINT_COLORS[point.type] ?? POINT_COLORS.NORMAL
-        const label = point.name?.trim() || point.code
+        const lockedByAgv = lockedPointOwnerMap?.get(point.code)
+        const isLocked = Boolean(lockedByAgv)
+        const baseColor = POINT_COLORS[point.type] ?? POINT_COLORS.NORMAL
+        const color = isLocked ? '#f59e0b' : baseColor
+        const label = lockedByAgv
+          ? `${point.name?.trim() || point.code} 🔒${lockedByAgv}`
+          : (point.name?.trim() || point.code)
 
         return (
           <group
@@ -189,6 +197,14 @@ export default function PathTopology({
               <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={1000}>
                 <ringGeometry args={[POINT_RADIUS + 0.08, POINT_RADIUS + 0.18, 24]} />
                 <meshBasicMaterial color="#38bdf8" transparent opacity={0.9} depthTest={false} depthWrite={false} />
+              </mesh>
+            )}
+
+            {/* 交通預約鎖定光環 (點位被 AGV 鎖定時顯示琥珀橘色警示外圈) */}
+            {isLocked && (
+              <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={999}>
+                <ringGeometry args={[POINT_RADIUS + 0.06, POINT_RADIUS + 0.16, 24]} />
+                <meshBasicMaterial color="#f59e0b" transparent opacity={0.95} depthTest={false} depthWrite={false} />
               </mesh>
             )}
 

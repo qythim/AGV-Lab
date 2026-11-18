@@ -5,6 +5,12 @@
 //           LiDAR 光學掃描環 (LiDAR Ring) 與狀態指示燈 (Beacon)
 // ============================================================================
 
+import { useRef } from 'react'
+import type { RefObject } from 'react'
+import { useFrame } from '@react-three/fiber'
+import * as THREE from 'three'
+import type { AgvLivePose } from '../hooks/useAgvRealtime'
+
 /** AGV 運行狀態列舉 */
 export type AgvStatus = 'OFFLINE' | 'IDLE' | 'RUNNING' | 'CHARGING' | 'ERROR'
 
@@ -18,6 +24,15 @@ export interface AgvProps {
   agvCode?: string
   /** 車輛運行狀態 (決定指示燈顏色) */
   status?: string
+  /** 即時高頻座標參照表，若提供則於 60fps useFrame 中進行線性插值 (LERP) */
+  poseMapRef?: RefObject<Map<string, AgvLivePose>>
+}
+
+/** 最短角度差線性插值，避免跨越 ±π 時發生 360 度反轉 */
+function lerpAngle(current: number, target: number, alpha: number): number {
+  let diff = ((target - current + Math.PI) % (Math.PI * 2)) - Math.PI
+  if (diff < -Math.PI) diff += Math.PI * 2
+  return current + diff * alpha
 }
 
 /** 依運行狀態設定指示燈顏色 */
@@ -34,11 +49,41 @@ export default function Agv({
   rotationY = 0,
   agvCode = 'AGV_01',
   status = 'IDLE',
+  poseMapRef,
 }: AgvProps) {
+  const groupRef = useRef<THREE.Group>(null)
   const beaconColor = STATUS_COLORS[status as AgvStatus] ?? STATUS_COLORS.OFFLINE
 
+  // 60fps 位置與角度線性插值 (Position & Rotation Interpolation)
+  useFrame((_, delta) => {
+    const group = groupRef.current
+    const livePose = poseMapRef?.current.get(agvCode)
+    if (!group || !livePose) return
+
+    const targetX = livePose.posX
+    const targetZ = livePose.posY
+    // Three.js 右手座標系 (X 右、Y 上、Z 朝前)，將平面 atan2 角度轉為繞 Y 軸旋轉弧度
+    const targetRotY = -((livePose.angle ?? 0) * Math.PI) / 180
+
+    const dx = targetX - group.position.x
+    const dz = targetZ - group.position.z
+    const distSq = dx * dx + dz * dz
+
+    // 若初始放置或瞬移距離過大 (> 5m)，直接吸附至目標位置；否則平滑插值
+    if (distSq > 25) {
+      group.position.set(targetX, 0, targetZ)
+      group.rotation.y = targetRotY
+      return
+    }
+
+    const alpha = Math.min(1, 1 - Math.exp(-15 * delta))
+    group.position.x = THREE.MathUtils.lerp(group.position.x, targetX, alpha)
+    group.position.z = THREE.MathUtils.lerp(group.position.z, targetZ, alpha)
+    group.rotation.y = lerpAngle(group.rotation.y, targetRotY, alpha)
+  })
+
   return (
-    <group name={agvCode} position={position} rotation={[0, rotationY, 0]}>
+    <group ref={groupRef} name={agvCode} position={position} rotation={[0, rotationY, 0]}>
       {/* ── 1. 主車體底盤 (Chassis) ─────────────────────────────────── */}
       <mesh position={[0, 0.28, 0]} castShadow receiveShadow>
         <boxGeometry args={[1.6, 0.36, 1.0]} />

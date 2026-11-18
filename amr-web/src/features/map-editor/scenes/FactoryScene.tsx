@@ -8,13 +8,13 @@
 // ============================================================================
 
 import { Suspense, useEffect, useState, useCallback, useMemo } from 'react'
+import type { RefObject } from 'react'
 import LineManagement from '../components/LineManagement'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 import { useNotify } from '../../../shared/hooks/useNotify'
 
 import { fetchActiveMap, fetchMapByCode, saveMap } from '../../map-management/api/mapApi'
-import { fetchAgvList } from '../../map-management/api/agvApi'
 import type { MapDataDto, MapObjectType } from '../../map-management/types/mapDto'
 import type { AgvResponse } from '../../map-management/types/agvDto'
 import { mapDtoToSceneData } from '../utils/mapCoordinateMapper'
@@ -22,6 +22,8 @@ import { sceneDataToMapDto } from '../utils/sceneDataToMapDto'
 import type { SceneData, ScenePoint, SceneObject, SceneEdge } from '../types/map3d'
 import type { SelectedTarget } from '../types/editor'
 import { useMapEditorState } from '../hooks/useMapEditorStore'
+import { useAgvRealtime } from '../hooks/useAgvRealtime'
+import type { AgvLivePose } from '../hooks/useAgvRealtime'
 import EditorToolbar from '../components/EditorToolbar'
 import EditorGizmo from '../components/EditorGizmo'
 
@@ -43,9 +45,11 @@ interface SceneHudProps {
   agvCount: number
   agvLoading: boolean
   agvError: string | null
+  wsConnected: boolean
+  lockedCount: number
 }
 
-function SceneHud({ sceneData, error, loading, agvCount, agvLoading, agvError }: SceneHudProps) {
+function SceneHud({ sceneData, error, loading, agvCount, agvLoading, agvError, wsConnected, lockedCount }: SceneHudProps) {
   if (loading) {
     return (
       <div style={{
@@ -83,10 +87,12 @@ function SceneHud({ sceneData, error, loading, agvCount, agvLoading, agvError }:
       {agvError ? (
         <div role="alert" style={{ color: '#f87171' }}>{agvError}</div>
       ) : (
-        <div>🚗 AGV：{agvLoading ? '載入中...' : `${agvCount} 台`}</div>
+        <div>🚗 AGV：{agvLoading ? '載入中...' : `${agvCount} 台`} | 🔒 鎖定點：{lockedCount} 個</div>
       )}
       <div style={{ fontSize: 11, marginTop: 2 }}>
-        <span style={{ color: '#10b981' }}>● RCS 後端資料</span>
+        <span style={{ color: wsConnected ? '#10b981' : '#f59e0b' }}>
+          ● {wsConnected ? 'WebSocket 即時串流中' : 'RCS 靜態資料 (等待 WS)'}
+        </span>
       </div>
     </div>
   )
@@ -98,6 +104,8 @@ function SceneHud({ sceneData, error, loading, agvCount, agvLoading, agvError }:
 interface SceneContentProps {
   sceneData: SceneData
   agvs: AgvResponse[]
+  poseMapRef: RefObject<Map<string, AgvLivePose>>
+  lockedPointOwnerMap: ReadonlyMap<string, string>
   mode: 'view' | 'edit'
   currentTool: ReturnType<typeof useMapEditorState>['currentTool']
   settings: ReturnType<typeof useMapEditorState>['settings']
@@ -113,6 +121,8 @@ interface SceneContentProps {
 function SceneContent({
   sceneData,
   agvs,
+  poseMapRef,
+  lockedPointOwnerMap,
   mode,
   currentTool,
   settings,
@@ -187,6 +197,7 @@ function SceneContent({
         selectedPointCode={selectedTarget?.type === 'POINT' ? (selectedTarget.id as string) : null}
         selectedLineCode={selectedTarget?.type === 'LINE' ? (selectedTarget.id as string) : null}
         showLabels={settings.showLabels}
+        lockedPointOwnerMap={lockedPointOwnerMap}
         onSelectPoint={mode === 'edit' ? onPointClick : undefined}
         onSelectLine={mode === 'edit' && ['select', 'translate', 'rotate', 'delete'].includes(currentTool)
           ? code => onSelectTarget({ type: 'LINE', id: code }) : undefined}
@@ -250,7 +261,8 @@ function SceneContent({
             agvCode={agv.agvCode}
             status={agv.status}
             position={[agv.posX, 0, agv.posY]}
-            rotationY={((agv.angle ?? 0) * Math.PI) / 180}
+            rotationY={-((agv.angle ?? 0) * Math.PI) / 180}
+            poseMapRef={poseMapRef}
           />
         </group>
       ))}
@@ -284,9 +296,14 @@ interface FactorySceneProps {
 export default function FactoryScene({ mapCode, mode = 'view', onBack }: FactorySceneProps) {
   const notify = useNotify()
   const [sceneData, setSceneData] = useState<SceneData | null>(null)
-  const [agvs, setAgvs] = useState<AgvResponse[]>([])
-  const [agvLoading, setAgvLoading] = useState(true)
-  const [agvError, setAgvError] = useState<string | null>(null)
+  const {
+    agvs,
+    agvLoading,
+    agvError,
+    wsConnected,
+    poseMapRef,
+    lockedPointOwnerMap,
+  } = useAgvRealtime(mapCode)
   const [rawDto, setRawDto] = useState<MapDataDto | undefined>()
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -327,23 +344,6 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
     })
     return () => { cancelled = true }
   }, [mapCode, markClean])
-
-  // 車輛狀態獨立於地圖載入；失敗時保留已載入的地圖。
-  useEffect(() => {
-    let cancelled = false
-    fetchAgvList().then((list) => {
-      if (cancelled) return
-      setAgvs(list)
-      setAgvError(null)
-    }).catch(() => {
-      if (cancelled) return
-      setAgvs([])
-      setAgvError('無法載入 AGV，地圖仍可使用。')
-    }).finally(() => {
-      if (!cancelled) setAgvLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [mapCode])
 
   const visibleAgvs = useMemo(() => agvs.filter((agv) =>
     agv.currentMapCode === sceneData?.mapCode &&
@@ -648,7 +648,16 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
       )}
 
       {/* ── HUD 覆蓋層 (畫面左下角) ──────────────────────────────────── */}
-      <SceneHud sceneData={sceneData} error={loadError} loading={loading} agvCount={visibleAgvs.length} agvLoading={agvLoading} agvError={agvError} />
+      <SceneHud
+        sceneData={sceneData}
+        error={loadError}
+        loading={loading}
+        agvCount={visibleAgvs.length}
+        agvLoading={agvLoading}
+        agvError={agvError}
+        wsConnected={wsConnected}
+        lockedCount={lockedPointOwnerMap.size}
+      />
 
       {/* ── Three.js Canvas ───────────────────────────────────────────── */}
       <Canvas
@@ -667,6 +676,8 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
             <SceneContent
               sceneData={sceneData}
               agvs={visibleAgvs}
+              poseMapRef={poseMapRef}
+              lockedPointOwnerMap={lockedPointOwnerMap}
               mode={mode}
               currentTool={currentTool}
               settings={settings}
