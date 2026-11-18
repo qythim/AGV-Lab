@@ -1,5 +1,10 @@
 package com.agvlab.rcs.traffic.reservation.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import tools.jackson.databind.ObjectMapper;
+
 import com.agvlab.rcs.map.service.MapGraph;
 import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.traffic.reservation.service.RedisService;
@@ -8,21 +13,31 @@ import com.agvlab.rcs.traffic.reservation.dto.LockPointsRequest;
 import com.agvlab.rcs.traffic.reservation.dto.LockPointsResponse;
 import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateRequest;
 import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
+import com.agvlab.rcs.websocket.handler.AgvWebSocketHandler;
 
-import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.Set;
 
 @Service    
 public class ReservationService{
+    private static final Logger log = LoggerFactory.getLogger(ReservationService.class);
     private final MapService maps;
     private final RedisService redis;
     private final PointLockMemoryManager memoryManager;
-    public ReservationService(MapService maps, RedisService redis, PointLockMemoryManager memoryManager) { 
+    private final AgvWebSocketHandler agvWebSocket;
+    private final ObjectMapper objectMapper;
+    public ReservationService(MapService maps, 
+                            RedisService redis, 
+                            PointLockMemoryManager memoryManager,
+                            AgvWebSocketHandler agvWebSocket,
+                            ObjectMapper objectMapper) { 
         this.maps = maps; 
         this.redis = redis;
         this.memoryManager= memoryManager;
+        this.agvWebSocket = agvWebSocket;
+        this.objectMapper = objectMapper;
     }
 
     private MapGraph getValidActiveGraph(String mapCode){
@@ -94,6 +109,9 @@ public class ReservationService{
         finally{
             memoryManager.release(request.pathPoint(), request.agvCode());
         }
+        if (permit) {
+            broadcastAgvLocks(request.agvCode());
+        }
         return new LockPointsResponse(request.agvCode(), permit,maxIndex,lockedPoints, isCanFollow);
     }
 
@@ -111,6 +129,9 @@ public class ReservationService{
                 redis.removePointLock(point);
                 releasePoints.add(point);
             }
+        }
+        if (!releasePoints.isEmpty()) {
+            broadcastAgvLocks(request.agvCode());
         }
         return new LockPointsResponse(request.agvCode(), true, releasePoints.size() - 1, releasePoints, true);
     }
@@ -162,5 +183,23 @@ public class ReservationService{
         );
         LockPointsResponse releaseResponse = release(releaseReq);
         return releaseResponse;
+    }
+
+    /**
+     * 當車輛鎖定狀態改變時，將最新的佔用點位集合廣播給所有 WebSocket 前端
+     */
+    private void broadcastAgvLocks(String agvCode) {
+        try {
+            Set<String> locks = redis.getAgvPoints(agvCode);
+            Set<String> safeLocks = (locks != null) ? locks : Set.of();
+            Map<String, Object> lockMsg = Map.of(
+                    "type", "AGV_LOCKS",
+                    "agvCode", agvCode,
+                    "lockPoints", safeLocks
+            );
+            agvWebSocket.broadcast(objectMapper.writeValueAsString(lockMsg));
+        } catch (Exception e) {
+            log.warn("廣播 AGV_LOCKS 失敗 [{}]: {}", agvCode, e.getMessage());
+        }
     }
 }

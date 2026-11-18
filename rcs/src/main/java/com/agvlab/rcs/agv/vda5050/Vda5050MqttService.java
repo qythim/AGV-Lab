@@ -24,6 +24,7 @@ import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
 import com.agvlab.rcs.map.service.MapGraph;
 import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.map.dto.MapDataDto.PointDto;
+import com.agvlab.rcs.websocket.handler.AgvWebSocketHandler;
 
 /**
  * VDA 5050 MQTT 通訊服務 (Spring Boot 與 Mosquitto 橋接核心)
@@ -40,15 +41,24 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     private final Map<String, String> lastPointMap = new ConcurrentHashMap<>();
     private final Map<String, Long> lastCheckTimeMap= new ConcurrentHashMap<>();
     private final Map<String, List<String>> lastSentPointsMap =new ConcurrentHashMap<>();
+    private final Map<String, AgvPoseSnapshot> lastBroadcastPoseMap = new ConcurrentHashMap<>();
+
+    // 用於比對座標或狀態是否發生變化 (Delta Update)
+    private record AgvPoseSnapshot(String mapCode, double x, double y, double angle, String status, String currentPoint) {}
 
     private final ReservationService reservationService;
     private final ObjectMapper objectMapper;
     private final MapService mapService;
+    private final AgvWebSocketHandler agvWebSocket;
     
-    public Vda5050MqttService(ReservationService reservationService, ObjectMapper objectMapper, MapService mapService) {
+    public Vda5050MqttService(ReservationService reservationService,
+                            ObjectMapper objectMapper, 
+                            MapService mapService,
+                            AgvWebSocketHandler agvWebSocket) {
         this.reservationService = reservationService;
         this.objectMapper = objectMapper;
         this.mapService = mapService;
+        this.agvWebSocket = agvWebSocket;
     }
 
     @Value("${mqtt.broker.url:tcp://mqtt:1883}")
@@ -113,8 +123,14 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             boolean driving = root.path("driving").asBoolean();
             double x = root.path("agvPosition").path("x").asDouble();
             double y = root.path("agvPosition").path("y").asDouble();
-            // 2. 調用 ReservationService.updateProgress 觸發滑動窗口與後方點位釋放
+            double theta = root.path("agvPosition").path("theta").asDouble();
 
+            if (agvCode.isEmpty()) return;
+
+            // 即時推送位置變化至前端 WebSocket (Delta Update，不查詢 Redis)
+            broadcastPoseIfChanged(mapCode, agvCode, currentPoint, driving, x, y, theta);
+
+            // 2. 調用 ReservationService.updateProgress 觸發滑動窗口與後方點位釋放
             List<String> fullpath = getActivePath(agvCode);
             if (fullpath == null || fullpath.isEmpty()) return;
             if(shouldTriggerTrafficCheck(agvCode, currentPoint)){
@@ -204,6 +220,35 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             return true;
         }
         return false;
+    }
+
+    private void broadcastPoseIfChanged(String mapCode, String agvCode, String currentPoint,
+                                        boolean driving, double x, double y, double theta) {
+        double angle = Math.toDegrees(theta);
+        String status = driving ? "RUNNING" : "IDLE";
+        AgvPoseSnapshot current = new AgvPoseSnapshot(mapCode, x, y, angle, status, currentPoint);
+
+        // 若座標與狀態皆未變動則不重複推送，減少網路與前端渲染負荷
+        if (current.equals(lastBroadcastPoseMap.get(agvCode))) {
+            return;
+        }
+        lastBroadcastPoseMap.put(agvCode, current);
+
+        try {
+            Map<String, Object> poseMsg = Map.of(
+                    "type", "AGV_POSE",
+                    "agvCode", agvCode,
+                    "currentMapCode", mapCode,
+                    "posX", x,
+                    "posY", y,
+                    "angle", angle,
+                    "status", status,
+                    "currentPoint", currentPoint
+            );
+            agvWebSocket.broadcast(objectMapper.writeValueAsString(poseMsg));
+        } catch (Exception e) {
+            log.warn("廣播 AGV_POSE 失敗 [{}]: {}", agvCode, e.getMessage());
+        }
     }
 
     private void handleTrafficProgress(String mapCode,String agvCode, String currentPoint, List<String> fullPath){
