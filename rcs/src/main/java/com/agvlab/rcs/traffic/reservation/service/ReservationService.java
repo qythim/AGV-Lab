@@ -14,11 +14,13 @@ import com.agvlab.rcs.traffic.reservation.dto.LockPointsResponse;
 import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateRequest;
 import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
 import com.agvlab.rcs.websocket.handler.AgvWebSocketHandler;
+import com.agvlab.rcs.traffic.reservation.event.PointReleasedEvent;
 
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.context.ApplicationEventPublisher;
 
 @Service    
 public class ReservationService{
@@ -28,16 +30,20 @@ public class ReservationService{
     private final PointLockMemoryManager memoryManager;
     private final AgvWebSocketHandler agvWebSocket;
     private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher eventPublisher;
+
     public ReservationService(MapService maps, 
                             RedisService redis, 
                             PointLockMemoryManager memoryManager,
                             AgvWebSocketHandler agvWebSocket,
-                            ObjectMapper objectMapper) { 
+                            ObjectMapper objectMapper,
+                            ApplicationEventPublisher eventPublisher) { 
         this.maps = maps; 
         this.redis = redis;
         this.memoryManager= memoryManager;
         this.agvWebSocket = agvWebSocket;
         this.objectMapper = objectMapper;
+        this.eventPublisher = eventPublisher;
     }
 
     private MapGraph getValidActiveGraph(String mapCode){
@@ -63,12 +69,13 @@ public class ReservationService{
         }
         boolean memoryLocked = memoryManager.tryLockList(request.pathPoint(), request.agvCode());
         if(memoryLocked == false){
-            return new LockPointsResponse(request.agvCode(), false,-1,List.of(), false);
+            return new LockPointsResponse(request.agvCode(), false,-1,List.of(), null, false);
         }
         List<String> lockedPoints = new ArrayList<>();
         boolean permit = true;
         int maxIndex = -1;
         boolean isCanFollow = true;
+        String blockPoint=null;
         
         try {
             for (int i = 0; i < request.pathPoint().size(); i++) {
@@ -77,6 +84,7 @@ public class ReservationService{
                 // 1. 如果有其他車輛占據->停止
                 if (holder != null && !holder.equals(request.agvCode())) {
                     permit = false;
+                    blockPoint= point;
                     maxIndex = i - 1;
                     break;
                 }
@@ -85,6 +93,7 @@ public class ReservationService{
                     boolean lockOk = redis.lockPoint(point, request.agvCode());
                     if (!lockOk) {
                         permit = false;
+                        blockPoint= point;
                         maxIndex = i - 1;
                         break;
                     }
@@ -112,7 +121,7 @@ public class ReservationService{
         if (permit) {
             broadcastAgvLocks(request.agvCode());
         }
-        return new LockPointsResponse(request.agvCode(), permit,maxIndex,lockedPoints, isCanFollow);
+        return new LockPointsResponse(request.agvCode(), permit,maxIndex,lockedPoints, blockPoint, isCanFollow);
     }
 
     private LockPointsResponse release(LockPointsRequest request){
@@ -132,14 +141,15 @@ public class ReservationService{
         }
         if (!releasePoints.isEmpty()) {
             broadcastAgvLocks(request.agvCode());
+            eventPublisher.publishEvent(new PointReleasedEvent(request.agvCode(), List.copyOf(releasePoints)));
         }
-        return new LockPointsResponse(request.agvCode(), true, releasePoints.size() - 1, releasePoints, true);
+        return new LockPointsResponse(request.agvCode(), true, releasePoints.size() - 1, releasePoints, null, true);
     }
 
     public ProgressUpdateResponse updateProgress(ProgressUpdateRequest request){
         int currentIndex = request.fullPath().indexOf(request.currentPoint());
         if (currentIndex == -1) {
-            return new ProgressUpdateResponse(request.agvCode(), request.currentPoint(), false, List.of(), List.of());
+            return new ProgressUpdateResponse(request.agvCode(), request.currentPoint(), false, List.of(), List.of(), null);
         }
 
         int endIndex = Math.min(currentIndex + request.windowSize(), request.fullPath().size());
@@ -160,14 +170,15 @@ public class ReservationService{
             request.currentPoint(),
             canMove,
             releaseResponse.pathPoint(),  // 已經成功釋放的點位
-            reserveResponse.pathPoint()   // 當前成功鎖定並保持的安全點位
+            reserveResponse.pathPoint(),  // 當前成功鎖定並保持的安全點位
+            reserveResponse.blockPoint()  // 被阻擋的目標點位 (若允許通行則為 null)
         );
     }
 
     public LockPointsResponse releaseExceptOccupied(String agvCode, String occupiedPoint){
         Set<String> holdingPoints = redis.getAgvPoints(agvCode);
         if(holdingPoints == null || holdingPoints.isEmpty()){
-            return  new LockPointsResponse(agvCode, true, -1, List.of(), true);
+            return  new LockPointsResponse(agvCode, true, -1, List.of(), null, true);
         }
         List<String> pointsToRelease = new ArrayList<>();
         for (String point : holdingPoints) {

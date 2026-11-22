@@ -77,4 +77,15 @@ public class RedisService {
     public Boolean agvHasPoint (String agvCode, String pointCode ){
         return redisTemplate.opsForSet().isMember("PointLock.agvCode:" + agvCode, pointCode);
     }
+
+    //queue for traffic.manager 
+    public Boolean enqueueWait(String agvCode, String pointCode){
+        return redisTemplate.opsForZSet().addIfAbsent("TrafficWait:" + pointCode, agvCode, System.currentTimeMillis());
+    }
+    public Set<String> getWaitingAgvs(String pointCode){
+        return redisTemplate.opsForZSet().members("TrafficWait:"+pointCode);
+    }
+    public Long removeWait(String agvCode, String pointCode){
+        return redisTemplate.opsForZSet().remove("TrafficWait:"+pointCode, agvCode);
+    }
 }

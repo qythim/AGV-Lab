@@ -7,6 +7,7 @@ public record LockPointsResponse(
      boolean resultPermit,  
      int index,
      List<String> pathPoint,
+     String blockPoint,
      boolean isCanFollow
 )
 {}
