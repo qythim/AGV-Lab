@@ -5,12 +5,10 @@ import com.agvlab.rcs.agv.dto.CreateAgvRequest;
 import com.agvlab.rcs.agv.dto.PlaceAgvRequest;
 import com.agvlab.rcs.agv.entity.RcsAgv;
 import com.agvlab.rcs.agv.service.AgvService;
-import com.agvlab.rcs.agv.vda5050.Vda5050MqttService;
 import com.agvlab.rcs.pathfinding.dto.FindPathResponse;
 import com.agvlab.rcs.pathfinding.service.FindPathService;
-import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateRequest;
+import com.agvlab.rcs.traffic.manager.TrafficManagerService;
 import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
-import com.agvlab.rcs.traffic.reservation.service.ReservationService;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -23,17 +21,15 @@ public class AgvController {
 
     private final AgvService agvService;
     private final FindPathService findPathService;
-    private final ReservationService reservationService;
-    private final Vda5050MqttService vda5050MqttService;
+    private final TrafficManagerService trafficManagerService;
+
     public AgvController(
             AgvService agvService,
             FindPathService findPathService,
-            ReservationService reservationService,
-            Vda5050MqttService vda5050MqttService) {
+            TrafficManagerService trafficManagerService) {
         this.agvService = agvService;
         this.findPathService = findPathService;
-        this.reservationService = reservationService;
-        this.vda5050MqttService = vda5050MqttService;
+        this.trafficManagerService = trafficManagerService;
     }
 
     @PostMapping
@@ -113,26 +109,12 @@ public class AgvController {
         if (fullPath == null || fullPath.isEmpty()) {
             throw new IllegalArgumentException("找不到可行路徑");
         }
-        // 2. 註冊完整路徑至緩存，供後續 MQTT 狀態回報觸發滑動窗口使用
-        vda5050MqttService.registerActivePath(request.agvCode(), fullPath);
-        // 3. 申請起點安全視窗 (windowSize = 2)
-        ProgressUpdateResponse progressRes = reservationService.updateProgress(
-                new ProgressUpdateRequest(
-                        request.mapCode(),
-                        request.agvCode(),
-                        request.startPoint(),
-                        fullPath,
-                        2
-                )
+        // 2. 交由 TrafficManagerService 註冊路徑、申請起點安全視窗並視權限下發首段訂單或排隊
+        return trafficManagerService.startNavigation(
+                request.mapCode(),
+                request.agvCode(),
+                request.startPoint(),
+                fullPath
         );
-        // 4. 若允許通行，發送首段 VDA 5050 Order 至車輛
-        if (progressRes.canMove() && !progressRes.holdingPoints().isEmpty()) {
-            vda5050MqttService.sendOrder(
-                    request.agvCode(),
-                    "order_" + request.agvCode(),
-                    progressRes.holdingPoints()
-            );
-        }
-        return progressRes;
     }
 }

@@ -83,7 +83,7 @@ public class RedisService {
         return redisTemplate.opsForZSet().addIfAbsent("TrafficWait:" + pointCode, agvCode, System.currentTimeMillis());
     }
     public Set<String> getWaitingAgvs(String pointCode){
-        return redisTemplate.opsForZSet().members("TrafficWait:"+pointCode);
+        return redisTemplate.opsForZSet().range("TrafficWait:" + pointCode, 0, -1);
     }
     public Long removeWait(String agvCode, String pointCode){
         return redisTemplate.opsForZSet().remove("TrafficWait:"+pointCode, agvCode);

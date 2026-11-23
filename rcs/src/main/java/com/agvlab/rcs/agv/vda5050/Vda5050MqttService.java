@@ -5,57 +5,51 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
-import java.util.Map;
-import java.util.List;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.agvlab.rcs.traffic.reservation.service.ReservationService;
-import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateRequest;
-import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
+import com.agvlab.rcs.map.dto.MapDataDto.PointDto;
 import com.agvlab.rcs.map.service.MapGraph;
 import com.agvlab.rcs.map.service.MapService;
-import com.agvlab.rcs.map.dto.MapDataDto.PointDto;
 import com.agvlab.rcs.websocket.handler.AgvWebSocketHandler;
 
 /**
  * VDA 5050 MQTT 通訊服務 (Spring Boot 與 Mosquitto 橋接核心)
  * 職責：
- * 1. 於系統啟動時建立與 MQTT Broker 的長連線
- * 2. 訂閱所有車輛的 VDA 5050 State 狀態主題 (uagv/v2/agv-lab/+/state)
- * 3. 提供向車輛發送 VDA 5050 Order 訂單的方法
+ * 1. 於系統啟動時建立與 MQTT Broker 的長連線並訂閱車輛狀態主題
+ * 2. 將高頻車輛座標差量推送至前端 WebSocket (AGV_POSE)
+ * 3. 發布 AgvStateReportEvent 事件交由 TrafficManager 處理交通調度
+ * 4. 提供向車輛發送 VDA 5050 Order 訂單的方法
  */
 @Service
 public class Vda5050MqttService implements MqttCallbackExtended {
 
     private static final Logger log = LoggerFactory.getLogger(Vda5050MqttService.class);
-    private final Map<String, List<String>> activePathMap = new ConcurrentHashMap<>();
-    private final Map<String, String> lastPointMap = new ConcurrentHashMap<>();
-    private final Map<String, Long> lastCheckTimeMap= new ConcurrentHashMap<>();
-    private final Map<String, List<String>> lastSentPointsMap =new ConcurrentHashMap<>();
-    private final Map<String, AgvPoseSnapshot> lastBroadcastPoseMap = new ConcurrentHashMap<>();
 
     // 用於比對座標或狀態是否發生變化 (Delta Update)
     private record AgvPoseSnapshot(String mapCode, double x, double y, double angle, String status, String currentPoint) {}
+    private final Map<String, AgvPoseSnapshot> lastBroadcastPoseMap = new ConcurrentHashMap<>();
 
-    private final ReservationService reservationService;
+    private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
     private final MapService mapService;
     private final AgvWebSocketHandler agvWebSocket;
-    
-    public Vda5050MqttService(ReservationService reservationService,
-                            ObjectMapper objectMapper, 
-                            MapService mapService,
-                            AgvWebSocketHandler agvWebSocket) {
-        this.reservationService = reservationService;
+
+    public Vda5050MqttService(ApplicationEventPublisher eventPublisher,
+                              ObjectMapper objectMapper,
+                              MapService mapService,
+                              AgvWebSocketHandler agvWebSocket) {
+        this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.mapService = mapService;
         this.agvWebSocket = agvWebSocket;
@@ -112,10 +106,8 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     @Override
     public void messageArrived(String topic, MqttMessage message) {
         String payload = new String(message.getPayload());
-        try{
+        try {
             log.debug("收到 MQTT 主題 [{}] 訊息: {}", topic, payload);
-            // TODO: 解析 VDA 5050 State JSON
-            // 1. 取得 agvCode 與當前點位 (nodePosition / lastNodeId)
             JsonNode root = objectMapper.readTree(payload);
             String agvCode = root.path("serialNumber").asText();
             String currentPoint = root.path("lastNodeId").asText();
@@ -127,17 +119,13 @@ public class Vda5050MqttService implements MqttCallbackExtended {
 
             if (agvCode.isEmpty()) return;
 
-            // 即時推送位置變化至前端 WebSocket (Delta Update，不查詢 Redis)
+            // 1. 即時推送位置變化至前端 WebSocket (Delta Update，不查詢 Redis)
             broadcastPoseIfChanged(mapCode, agvCode, currentPoint, driving, x, y, theta);
 
-            // 2. 調用 ReservationService.updateProgress 觸發滑動窗口與後方點位釋放
-            List<String> fullpath = getActivePath(agvCode);
-            if (fullpath == null || fullpath.isEmpty()) return;
-            if(shouldTriggerTrafficCheck(agvCode, currentPoint)){
-                handleTrafficProgress(mapCode, agvCode, currentPoint, fullpath);
-            }
-            
-        }catch(Exception e){
+            // 2. 發布狀態回報事件，交由 TrafficManagerService 處理交通申請與排隊調度
+            eventPublisher.publishEvent(new AgvStateReportEvent(mapCode, agvCode, currentPoint));
+
+        } catch (Exception e) {
             log.error("解析 VDA 5050 狀態封包失敗: {}, payload: {}", e.getMessage(), payload);
         }
     }
@@ -147,34 +135,35 @@ public class Vda5050MqttService implements MqttCallbackExtended {
         // 訊息發送完成回調 (QoS 1 / 2 使用)
     }
 
-        /**
-     * 發送 VDA 5050 Order 訂單至指定車輛，並自動註冊該車輛的當前路徑
+    /**
+     * 發送 VDA 5050 Order 訂單至指定車輛
      *
-     * @param agvCode 車輛代碼 (例如: "AGV-01")
-     * @param orderId 任務代碼 (例如: "order_001")
-     * @param pathPoints 導航點位清單 (例如: ["P_START", "P_N1", "P_N2"])
+     * @param agvCode    車輛代碼 (例如: "AGV-01")
+     * @param orderId    任務代碼 (例如: "order_001")
+     * @param pathPoints 導航點位清單 (例如: ["P_START", "P_N1"])
      */
     public void sendOrder(String agvCode, String orderId, List<String> pathPoints) {
         if (pathPoints == null || pathPoints.isEmpty()) {
             return;
         }
 
-        // 2. 包裝JSON VDA 5050 Order
-        // VDA: {"orderId": "...", "nodes": [{"nodeId": "P_START"}, {"nodeId": "P_N1"}]}
         try {
             List<Map<String, Object>> nodes = new ArrayList<>();
             MapGraph graph = mapService.getActiveGraph();
             for (String point : pathPoints) {
                 PointDto p = (graph != null) ? graph.nodeByCode().get(point) : null;
+                if (p == null) {
+                    throw new IllegalArgumentException("找不到點位座標: " + point);
+                }
                 nodes.add(Map.of(
-                    "nodeId", point,
-                    "nodePosition", Map.of("x", p.x(), "y", p.y())
+                        "nodeId", point,
+                        "nodePosition", Map.of("x", p.x(), "y", p.y())
                 ));
             }
 
             Map<String, Object> orderPayload = Map.of(
-                "orderId", orderId,
-                "nodes", nodes
+                    "orderId", orderId,
+                    "nodes", nodes
             );
 
             String orderJson = objectMapper.writeValueAsString(orderPayload);
@@ -202,24 +191,6 @@ public class Vda5050MqttService implements MqttCallbackExtended {
         } catch (MqttException e) {
             log.error("關閉 MQTT 連線時發生錯誤: {}", e.getMessage(), e);
         }
-    }
-
-    public void registerActivePath(String agvCode, List<String> path){
-        this.activePathMap.put(agvCode, path);
-    }
-    public List<String> getActivePath(String agvCode){
-        return activePathMap.get(agvCode);
-    }
-
-    private boolean shouldTriggerTrafficCheck(String agvCode, String currentPoint){
-        long now = System.currentTimeMillis();
-        long lastTime = this.lastCheckTimeMap.getOrDefault(agvCode, 0L);
-        if( now - lastTime >= 500 || !currentPoint.equals( this.lastPointMap.getOrDefault(agvCode, ""))){
-            this.lastCheckTimeMap.put(agvCode, now);
-            this.lastPointMap.put(agvCode, currentPoint);
-            return true;
-        }
-        return false;
     }
 
     private void broadcastPoseIfChanged(String mapCode, String agvCode, String currentPoint,
@@ -250,16 +221,4 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             log.warn("廣播 AGV_POSE 失敗 [{}]: {}", agvCode, e.getMessage());
         }
     }
-
-    private void handleTrafficProgress(String mapCode,String agvCode, String currentPoint, List<String> fullPath){
-        ProgressUpdateRequest progressUpdate  = new ProgressUpdateRequest(mapCode,agvCode,currentPoint,fullPath,2);
-        ProgressUpdateResponse res = reservationService.updateProgress(progressUpdate);
-        if(res.canMove()==true){
-            if(!res.holdingPoints().equals(lastSentPointsMap.get(agvCode))){
-                lastSentPointsMap.put(agvCode, res.holdingPoints());
-                sendOrder(agvCode, "order_" + agvCode, res.holdingPoints());
-            }
-        }
-    }
-}
 
