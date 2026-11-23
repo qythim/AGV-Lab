@@ -10,6 +10,7 @@ import com.agvlab.rcs.traffic.reservation.service.ReservationService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
@@ -25,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 2. 申請遭阻擋時，將車輛依 FIFO 順序寫入 Redis ZSET 排隊佇列 (TrafficWait:<pointCode>)
  * 3. 監聽點位釋放事件 (PointReleasedEvent)，即時喚醒排隊中的首台車輛繼續前進
  * 4. 取得通行權後，呼叫 Vda5050MqttService 下發 VDA 5050 Order 訂單
+ * 5. 當車輛抵達路徑終點時，發布 NavigationCompletedEvent 通知 TaskService 推進任務生命週期
  */
 @Service
 public class TrafficManagerService {
@@ -35,8 +37,9 @@ public class TrafficManagerService {
     private static final int DEFAULT_WINDOW_SIZE = 2;
     private static final long CHECK_INTERVAL_MS = 500;
 
-    // 車輛執行中路徑與狀態快取 (未來可由 TaskService 接管路徑生命週期)
+    // 車輛執行中路徑與狀態快取
     private final Map<String, List<String>> activePathMap = new ConcurrentHashMap<>();
+    private final Map<String, String> activeOrderIdMap = new ConcurrentHashMap<>();
     private final Map<String, String> agvMapCodeMap = new ConcurrentHashMap<>();
     private final Map<String, String> lastPointMap = new ConcurrentHashMap<>();
     private final Map<String, Long> lastCheckTimeMap = new ConcurrentHashMap<>();
@@ -45,27 +48,50 @@ public class TrafficManagerService {
     private final ReservationService reservationService;
     private final RedisService redisService;
     private final Vda5050MqttService vda5050MqttService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public TrafficManagerService(ReservationService reservationService,
                                  RedisService redisService,
-                                 Vda5050MqttService vda5050MqttService) {
+                                 Vda5050MqttService vda5050MqttService,
+                                 ApplicationEventPublisher eventPublisher) {
         this.reservationService = reservationService;
         this.redisService = redisService;
         this.vda5050MqttService = vda5050MqttService;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
-     * 註冊車輛的導航路徑並立即申請起點安全視窗
+     * 註冊車輛的導航路徑 (指定訂單/任務編號) 並立即申請起點安全視窗
      */
-    public ProgressUpdateResponse startNavigation(String mapCode, String agvCode, String startPoint, List<String> fullPath) {
+    public ProgressUpdateResponse startNavigation(String mapCode, String agvCode, String orderId,
+                                                  String startPoint, List<String> fullPath) {
         activePathMap.put(agvCode, fullPath);
+        activeOrderIdMap.put(agvCode, orderId != null ? orderId : ("order_" + agvCode));
         agvMapCodeMap.put(agvCode, mapCode);
         lastPointMap.put(agvCode, startPoint);
         lastCheckTimeMap.put(agvCode, System.currentTimeMillis());
         lastSentPointsMap.remove(agvCode);
 
-        log.info("已註冊車輛 [{}] 導航路徑 (地圖: {}): {}", agvCode, mapCode, fullPath);
+        log.info("已註冊車輛 [{}] 導航路徑 (訂單: {}, 地圖: {}): {}", agvCode, orderId, mapCode, fullPath);
         return requestMove(mapCode, agvCode, startPoint);
+    }
+
+    /**
+     * 向下相容方法：未指定 orderId 時使用預設名稱
+     */
+    public ProgressUpdateResponse startNavigation(String mapCode, String agvCode,
+                                                  String startPoint, List<String> fullPath) {
+        return startNavigation(mapCode, agvCode, "order_" + agvCode, startPoint, fullPath);
+    }
+
+    /**
+     * 取消指定車輛的執行中導航路徑
+     */
+    public void cancelNavigation(String agvCode) {
+        activePathMap.remove(agvCode);
+        activeOrderIdMap.remove(agvCode);
+        lastSentPointsMap.remove(agvCode);
+        log.info("已取消車輛 [{}] 的導航路徑", agvCode);
     }
 
     /**
@@ -83,7 +109,8 @@ public class TrafficManagerService {
             agvMapCodeMap.put(agvCode, event.mapCode());
         }
 
-        if (!activePathMap.containsKey(agvCode)) {
+        List<String> activePath = activePathMap.get(agvCode);
+        if (activePath == null || activePath.isEmpty()) {
             return;
         }
 
@@ -93,6 +120,16 @@ public class TrafficManagerService {
 
         String mapCode = agvMapCodeMap.getOrDefault(agvCode, event.mapCode());
         requestMove(mapCode, agvCode, currentPoint);
+
+        // 若車輛已抵達當前導航路徑的最後一個點位，清除導航快取並發布完成事件
+        String finalPoint = activePath.get(activePath.size() - 1);
+        if (currentPoint.equals(finalPoint)) {
+            String completedOrderId = activeOrderIdMap.remove(agvCode);
+            activePathMap.remove(agvCode);
+            lastSentPointsMap.remove(agvCode);
+            log.info("車輛 [{}] 已抵達導航路段終點 [{}] (訂單: {})", agvCode, currentPoint, completedOrderId);
+            eventPublisher.publishEvent(new NavigationCompletedEvent(agvCode, completedOrderId, currentPoint));
+        }
     }
 
     /**
@@ -154,7 +191,8 @@ public class TrafficManagerService {
             List<String> lastSent = lastSentPointsMap.get(agvCode);
             if (!res.holdingPoints().equals(lastSent)) {
                 lastSentPointsMap.put(agvCode, List.copyOf(res.holdingPoints()));
-                vda5050MqttService.sendOrder(agvCode, "order_" + agvCode, res.holdingPoints());
+                String orderId = activeOrderIdMap.getOrDefault(agvCode, "order_" + agvCode);
+                vda5050MqttService.sendOrder(agvCode, orderId, res.holdingPoints());
             }
         } else if (res.blockPoint() != null) {
             Boolean added = redisService.enqueueWait(agvCode, res.blockPoint());
@@ -186,4 +224,3 @@ public class TrafficManagerService {
         return false;
     }
 }
-

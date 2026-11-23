@@ -5,6 +5,8 @@ import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.agv.entity.RcsAgv;
 import com.agvlab.rcs.agv.dto.AgvResponse;
 import com.agvlab.rcs.agv.dto.PlaceAgvRequest;
+import com.agvlab.rcs.agv.event.AgvAvailableEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DataIntegrityViolationException;
 import java.util.List;
@@ -14,10 +16,14 @@ import java.util.NoSuchElementException;
 public class AgvService {
     private final RcsAgvRepository rcsAgvRepository;
     private final MapService mapService;
+    private final ApplicationEventPublisher eventPublisher;
 
-    public AgvService(RcsAgvRepository rcsAgvRepository, MapService mapService) {
+    public AgvService(RcsAgvRepository rcsAgvRepository,
+                      MapService mapService,
+                      ApplicationEventPublisher eventPublisher) {
         this.rcsAgvRepository = rcsAgvRepository;
         this.mapService = mapService;
+        this.eventPublisher = eventPublisher;
     }
 
     public RcsAgv createAgv(String agvCode, String agvName, String agvType) {
@@ -114,7 +120,11 @@ public class AgvService {
         agv.setAngle(0.0);
         agv.setCurrentMapCode(placeAgvRequest.mapCode());
         agv.setCurrentPoint(placeAgvRequest.pointCode());
-        return rcsAgvRepository.saveAndFlush(agv);
+        RcsAgv saved = rcsAgvRepository.saveAndFlush(agv);
+        if ("IDLE".equals(saved.getStatus())) {
+            eventPublisher.publishEvent(new AgvAvailableEvent(saved.getAgvCode(), saved.getCurrentMapCode()));
+        }
+        return saved;
     }
 
     @Transactional
