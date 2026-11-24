@@ -1,26 +1,42 @@
 import json
+import os
 from datetime import datetime, timezone
+
+import paho.mqtt.client as mqtt
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-import paho.mqtt.client as mqtt
 
 
 class Vda5050Bridge(Node):
     """
     VDA 5050 協議轉換橋接節點 (Bridge Node)
     職責：
-    1. 接收 ROS 2 虛擬車輛內部狀態 (/agv/agv01/state) -> 轉換為 VDA 5050 State 發佈至 MQTT
-    2. 接收 MQTT 上的 VDA 5050 Order 訂單 -> 轉換為 ROS 2 控制指令 (/agv/agv01/command)
+    1. 接收同命名空間下的 ROS 2 虛擬車輛狀態 (state) -> 轉換為 VDA 5050 State 發佈至 MQTT
+    2. 接收 MQTT 上的 VDA 5050 Order 訂單 -> 轉換為 ROS 2 控制指令 (command)
     """
 
     def __init__(self):
         super().__init__('vda5050_bridge')
 
-        # 支援 ROS 2 參數動態設定 (車輛識別碼預設為 'AGV-01')
+        # 透過 ROS 2 參數與環境變數動態載入設定，避免硬編碼
+        default_mqtt_host = os.getenv('MQTT_HOST', 'mqtt')
+        default_mqtt_port = int(os.getenv('MQTT_PORT', '1883'))
+
         self.declare_parameter('robot_id', 'AGV-01')
+        self.declare_parameter('manufacturer', 'agv-lab')
+        self.declare_parameter('mqtt_broker', default_mqtt_host)
+        self.declare_parameter('mqtt_port', default_mqtt_port)
+        self.declare_parameter('init_map_id', '')
+        self.declare_parameter('default_max_speed', 1.0)
+
         self.serial_number = self.get_parameter('robot_id').get_parameter_value().string_value
-        self.manufacturer = 'agv-lab'
+        self.manufacturer = self.get_parameter('manufacturer').get_parameter_value().string_value
+        self.mqtt_broker = self.get_parameter('mqtt_broker').get_parameter_value().string_value
+        self.mqtt_port = self.get_parameter('mqtt_port').get_parameter_value().integer_value
+        self.current_map_id = self.get_parameter('init_map_id').get_parameter_value().string_value
+        self.default_max_speed = self.get_parameter('default_max_speed').get_parameter_value().double_value
+
         self.header_id = 0
 
         # MQTT Topic 命名規範 (符合 VDA 5050 標準: uagv/v2/manufacturer/serialNumber/topic)
@@ -29,14 +45,12 @@ class Vda5050Bridge(Node):
         self.order_topic = f'{self.topic_prefix}/order'
 
         # 1. 初始化 ROS 2 相對 Topic (command / state)，與同 Namespace 下的 virtual_agv 通訊
-        # 發佈控制指令給 virtual_agv
         self.ros_command_pub = self.create_publisher(
             String,
             'command',
             10
         )
 
-        # 訂閱 virtual_agv 發佈的內部狀態
         self.ros_state_sub = self.create_subscription(
             String,
             'state',
@@ -45,70 +59,112 @@ class Vda5050Bridge(Node):
         )
 
         # 2. 初始化 MQTT 客戶端連線 (相容 paho-mqtt 1.x 與 2.x 標準語法)
-        self.mqtt_broker = 'mqtt'
-        self.mqtt_port = 1883
         self.mqtt_client = mqtt.Client(client_id=f'{self.serial_number}_vda_bridge')
-
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
 
         try:
-            self.get_logger().info(f'正在連線至 MQTT Broker ({self.mqtt_broker}:{self.mqtt_port})...')
+            self.get_logger().info(
+                f'[{self.serial_number}] 正在連線至 MQTT Broker ({self.mqtt_broker}:{self.mqtt_port})...'
+            )
             self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, keepalive=60)
             self.mqtt_client.loop_start()  # 在背景線程處理 MQTT 網路通訊
         except Exception as e:
-            self.get_logger().error(f'MQTT 連線失敗: {e}')
+            self.get_logger().error(f'[{self.serial_number}] MQTT 連線失敗: {e}')
 
-        self.get_logger().info('VDA 5050 Bridge Node 初始化完成')
+        self.get_logger().info(
+            f'[{self.serial_number}] VDA 5050 Bridge Node 初始化完成 '
+            f'(namespace={self.get_namespace()}, init_map_id={self.current_map_id or "未指定"})'
+        )
 
     def on_mqtt_connect(self, client, userdata, flags, rc, *args):
         """當成功連線至 MQTT Broker 時觸發"""
         if rc == 0:
-            self.get_logger().info(f'MQTT 連線成功！開始訂閱訂單 Topic: {self.order_topic}')
+            self.get_logger().info(
+                f'[{self.serial_number}] MQTT 連線成功！開始訂閱訂單 Topic: {self.order_topic}'
+            )
             self.mqtt_client.subscribe(self.order_topic)
         else:
-            self.get_logger().error(f'MQTT 連線錯誤，返回碼: {rc}')
+            self.get_logger().error(f'[{self.serial_number}] MQTT 連線錯誤，返回碼: {rc}')
 
     def on_mqtt_message(self, client, userdata, msg):
         """
         接收來自 RCS 的 VDA 5050 Order 訂單
-        將其轉換為 ROS 2 虛擬車輛可識別的 action: MOVE 指令
+        解析 nodes 與 edges.maxSpeed 後轉換為 ROS 2 虛擬車輛控制指令
         """
         try:
             payload = json.loads(msg.payload.decode('utf-8'))
-            self.get_logger().info(f'收到 VDA 5050 訂單: {payload.get("orderId")}')
+            order_id = payload.get('orderId', 'order_unknown')
+            self.get_logger().info(f'[{self.serial_number}] 收到 VDA 5050 訂單: {order_id}')
 
-            # 解析 VDA 5050 nodes 點位清單
+            # 解析每條邊的速限設定 (以 endNodeId 對應進入該點位前所行經之邊速限)
+            edges = payload.get('edges', [])
+            edge_speed_by_end_node = {}
+            for edge in edges:
+                end_node_id = edge.get('endNodeId')
+                edge_max_speed = edge.get('maxSpeed')
+                if end_node_id and edge_max_speed is not None:
+                    try:
+                        speed_val = float(edge_max_speed)
+                        if speed_val > 0:
+                            edge_speed_by_end_node[end_node_id] = speed_val
+                    except (TypeError, ValueError):
+                        pass
+
+            # 解析 VDA 5050 nodes 點位清單並動態同步 mapId
             nodes = payload.get('nodes', [])
             waypoints = []
             for node in nodes:
+                node_id = node.get('nodeId', '')
                 node_pos = node.get('nodePosition', {})
+                node_map_id = node_pos.get('mapId')
+                if node_map_id:
+                    self.current_map_id = str(node_map_id)
+
+                wp_speed = edge_speed_by_end_node.get(node_id, self.default_max_speed)
                 waypoints.append({
                     'x': float(node_pos.get('x', 0.0)),
                     'y': float(node_pos.get('y', 0.0)),
-                    'nodeId': node.get('nodeId', '')
+                    'nodeId': node_id,
+                    'max_speed': wp_speed
                 })
 
             if not waypoints:
-                self.get_logger().warning('訂單中無有效點位，忽略執行')
+                self.get_logger().warning(f'[{self.serial_number}] 訂單中無有效點位，忽略執行')
                 return
+
+            # 若 payload 頂層有提供 mapId 且尚未設定，亦作為備援來源
+            if not self.current_map_id and payload.get('mapId'):
+                self.current_map_id = str(payload.get('mapId'))
+
+            # 取各段邊速限作為預設參考值
+            command_max_speed = max(
+                (wp['max_speed'] for wp in waypoints),
+                default=self.default_max_speed
+            )
 
             # 組裝 ROS 2 內部控制指令
             ros_cmd = {
                 'action': 'MOVE',
-                'task_id': payload.get('orderId', 'order_unknown'),
-                'map_version': '1.0',
-                'max_speed': 1.0,
+                'task_id': order_id,
+                'map_version': str(payload.get('mapVersion', '1')),
+                'max_speed': command_max_speed,
                 'waypoints': waypoints
             }
 
             cmd_msg = String()
             cmd_msg.data = json.dumps(ros_cmd)
             self.ros_command_pub.publish(cmd_msg)
-            self.get_logger().info(f'已轉發移動指令至 ROS 2 (/agv/agv01/command)，點位數量: {len(waypoints)}')
+
+            ns = self.get_namespace().rstrip('/')
+            cmd_topic = f'{ns}/command' if ns else '/command'
+            self.get_logger().info(
+                f'[{self.serial_number}] 已轉發移動指令至 ROS 2 ({cmd_topic})，'
+                f'地圖: {self.current_map_id or "未指定"}, 點位數量: {len(waypoints)}'
+            )
 
         except Exception as e:
-            self.get_logger().error(f'解析 VDA 5050 訂單時發生錯誤: {e}')
+            self.get_logger().error(f'[{self.serial_number}] 解析 VDA 5050 訂單時發生錯誤: {e}')
 
     def on_ros_state_received(self, msg):
         """
@@ -124,7 +180,7 @@ class Vda5050Bridge(Node):
             y = float(pos.get('y', 0.0))
             theta = float(internal_state.get('orientation', 0.0))
 
-            # 組裝符合 VDA 5050 規範的 State JSON 物件
+            # 組裝符合 VDA 5050 規範的 State JSON 物件 (使用動態 mapId)
             vda_state = {
                 'headerId': self.header_id,
                 'timestamp': datetime.now(timezone.utc).isoformat(),
@@ -138,8 +194,8 @@ class Vda5050Bridge(Node):
                     'x': x,
                     'y': y,
                     'theta': theta,
-                    'mapId': 'BENCHMARK_01',
-                    'positionInitialized': True
+                    'mapId': self.current_map_id,
+                    'positionInitialized': bool(self.current_map_id)
                 },
                 'velocity': {
                     'vx': float(internal_state.get('linear_velocity', 0.0)),
@@ -156,11 +212,10 @@ class Vda5050Bridge(Node):
                 }
             }
 
-            # 發佈至 MQTT state_topic
             self.mqtt_client.publish(self.state_topic, json.dumps(vda_state))
 
         except Exception as e:
-            self.get_logger().error(f'轉發 VDA 5050 狀態至 MQTT 失敗: {e}')
+            self.get_logger().error(f'[{self.serial_number}] 轉發 VDA 5050 狀態至 MQTT 失敗: {e}')
 
     def destroy_node(self):
         """節點關閉時安全中斷 MQTT 連線"""
@@ -184,4 +239,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-

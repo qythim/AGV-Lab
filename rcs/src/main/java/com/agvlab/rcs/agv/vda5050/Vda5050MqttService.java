@@ -18,9 +18,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.agvlab.rcs.map.dto.MapDataDto.LineDto;
 import com.agvlab.rcs.map.dto.MapDataDto.PointDto;
 import com.agvlab.rcs.map.service.MapGraph;
-import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.websocket.handler.AgvWebSocketHandler;
 
 /**
@@ -42,16 +42,13 @@ public class Vda5050MqttService implements MqttCallbackExtended {
 
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
-    private final MapService mapService;
     private final AgvWebSocketHandler agvWebSocket;
 
     public Vda5050MqttService(ApplicationEventPublisher eventPublisher,
                               ObjectMapper objectMapper,
-                              MapService mapService,
                               AgvWebSocketHandler agvWebSocket) {
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
-        this.mapService = mapService;
         this.agvWebSocket = agvWebSocket;
     }
 
@@ -136,34 +133,52 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     }
 
     /**
-     * 發送 VDA 5050 Order 訂單至指定車輛
+     * 將已驗證之地圖路徑快照封裝為 VDA 5050 Order 並發送至指定車輛
      *
-     * @param agvCode    車輛代碼 (例如: "AGV-01")
-     * @param orderId    任務代碼 (例如: "order_001")
-     * @param pathPoints 導航點位清單 (例如: ["P_START", "P_N1"])
+     * @param agvCode 車輛代碼 (例如: "AGV-01")
+     * @param orderId 任務代碼 (例如: "TASK-001:DELIVERY")
+     * @param route   由 MapGraph 解析完成之點位與邊資料
      */
-    public void sendOrder(String agvCode, String orderId, List<String> pathPoints) {
-        if (pathPoints == null || pathPoints.isEmpty()) {
+    public void sendOrder(String agvCode, String orderId, MapGraph.ResolvedPath route) {
+        if (route == null || route.nodes().isEmpty()) {
             return;
         }
 
         try {
-            List<Map<String, Object>> nodes = new ArrayList<>();
-            MapGraph graph = mapService.getActiveGraph();
-            for (String point : pathPoints) {
-                PointDto p = (graph != null) ? graph.nodeByCode().get(point) : null;
-                if (p == null) {
-                    throw new IllegalArgumentException("找不到點位座標: " + point);
-                }
+            List<Map<String, Object>> nodes = new ArrayList<>(route.nodes().size());
+            List<Map<String, Object>> edges = new ArrayList<>(route.edges().size());
+            String mapId = route.mapCode();
+
+            for (int i = 0; i < route.nodes().size(); i++) {
+                PointDto p = route.nodes().get(i);
                 nodes.add(Map.of(
-                        "nodeId", point,
-                        "nodePosition", Map.of("x", p.x(), "y", p.y())
+                        "nodeId", p.pointCode(),
+                        "sequenceId", i * 2,
+                        "released", true,
+                        "nodePosition", Map.of(
+                                "x", p.x(),
+                                "y", p.y(),
+                                "mapId", mapId
+                        )
+                ));
+            }
+
+            for (int i = 0; i < route.edges().size(); i++) {
+                LineDto line = route.edges().get(i);
+                edges.add(Map.of(
+                        "edgeId", line.lineCode(),
+                        "sequenceId", i * 2 + 1,
+                        "released", true,
+                        "startNodeId", line.startPointCode(),
+                        "endNodeId", line.endPointCode(),
+                        "maxSpeed", line.maxSpeed()
                 ));
             }
 
             Map<String, Object> orderPayload = Map.of(
                     "orderId", orderId,
-                    "nodes", nodes
+                    "nodes", nodes,
+                    "edges", edges
             );
 
             String orderJson = objectMapper.writeValueAsString(orderPayload);
@@ -221,4 +236,5 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             log.warn("廣播 AGV_POSE 失敗 [{}]: {}", agvCode, e.getMessage());
         }
     }
+}
 

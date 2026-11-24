@@ -2,6 +2,8 @@ package com.agvlab.rcs.traffic.manager;
 
 import com.agvlab.rcs.agv.vda5050.AgvStateReportEvent;
 import com.agvlab.rcs.agv.vda5050.Vda5050MqttService;
+import com.agvlab.rcs.map.service.MapGraph;
+import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateRequest;
 import com.agvlab.rcs.traffic.reservation.dto.ProgressUpdateResponse;
 import com.agvlab.rcs.traffic.reservation.event.PointReleasedEvent;
@@ -47,15 +49,18 @@ public class TrafficManagerService {
 
     private final ReservationService reservationService;
     private final RedisService redisService;
+    private final MapService mapService;
     private final Vda5050MqttService vda5050MqttService;
     private final ApplicationEventPublisher eventPublisher;
 
     public TrafficManagerService(ReservationService reservationService,
                                  RedisService redisService,
+                                 MapService mapService,
                                  Vda5050MqttService vda5050MqttService,
                                  ApplicationEventPublisher eventPublisher) {
         this.reservationService = reservationService;
         this.redisService = redisService;
+        this.mapService = mapService;
         this.vda5050MqttService = vda5050MqttService;
         this.eventPublisher = eventPublisher;
     }
@@ -190,9 +195,14 @@ public class TrafficManagerService {
         if (res.canMove() && !res.holdingPoints().isEmpty()) {
             List<String> lastSent = lastSentPointsMap.get(agvCode);
             if (!res.holdingPoints().equals(lastSent)) {
-                lastSentPointsMap.put(agvCode, List.copyOf(res.holdingPoints()));
                 String orderId = activeOrderIdMap.getOrDefault(agvCode, "order_" + agvCode);
-                vda5050MqttService.sendOrder(agvCode, orderId, res.holdingPoints());
+                // 透過 MapGraph 解析並驗證本次授權路段的點位與邊，再交由 MQTT 層封裝為 VDA 5050 格式
+                MapGraph graph = (mapCode != null && !mapCode.isBlank())
+                        ? mapService.getGraph(mapCode)
+                        : mapService.getActiveGraph();
+                MapGraph.ResolvedPath route = graph.resolvePath(res.holdingPoints());
+                vda5050MqttService.sendOrder(agvCode, orderId, route);
+                lastSentPointsMap.put(agvCode, List.copyOf(res.holdingPoints()));
             }
         } else if (res.blockPoint() != null) {
             Boolean added = redisService.enqueueWait(agvCode, res.blockPoint());
