@@ -1,6 +1,7 @@
 package com.agvlab.rcs.task.controller;
 
 import com.agvlab.rcs.task.dto.CreateTaskRequest;
+import com.agvlab.rcs.task.dto.TaskDetailResponse;
 import com.agvlab.rcs.task.dto.TaskResponse;
 import com.agvlab.rcs.task.service.TaskService;
 
@@ -46,6 +47,14 @@ public class TaskController {
     @GetMapping("/{taskCode}")
     public TaskResponse getTask(@PathVariable String taskCode) {
         return taskService.getTask(taskCode);
+    }
+
+    /**
+     * 查詢指定任務的各階段執行明細 (PICKUP / DELIVERY 時間軸)
+     */
+    @GetMapping("/{taskCode}/details")
+    public List<TaskDetailResponse> getTaskDetails(@PathVariable String taskCode) {
+        return taskService.getTaskDetails(taskCode);
     }
 
     /**

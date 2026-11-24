@@ -9,8 +9,11 @@ import com.agvlab.rcs.map.service.MapService;
 import com.agvlab.rcs.pathfinding.dto.FindPathResponse;
 import com.agvlab.rcs.pathfinding.service.FindPathService;
 import com.agvlab.rcs.task.dto.CreateTaskRequest;
+import com.agvlab.rcs.task.dto.TaskDetailResponse;
 import com.agvlab.rcs.task.dto.TaskResponse;
 import com.agvlab.rcs.task.entity.RcsTask;
+import com.agvlab.rcs.task.entity.RcsTaskDetail;
+import com.agvlab.rcs.task.repository.RcsTaskDetailRepository;
 import com.agvlab.rcs.task.repository.RcsTaskRepository;
 import com.agvlab.rcs.traffic.manager.NavigationCompletedEvent;
 import com.agvlab.rcs.traffic.manager.TrafficManagerService;
@@ -70,6 +73,7 @@ public class TaskService {
     });
 
     private final RcsTaskRepository rcsTaskRepository;
+    private final RcsTaskDetailRepository rcsTaskDetailRepository;
     private final RcsAgvRepository rcsAgvRepository;
     private final MapService mapService;
     private final FindPathService findPathService;
@@ -78,6 +82,7 @@ public class TaskService {
     private final TransactionTemplate transactionTemplate;
 
     public TaskService(RcsTaskRepository rcsTaskRepository,
+                       RcsTaskDetailRepository rcsTaskDetailRepository,
                        RcsAgvRepository rcsAgvRepository,
                        MapService mapService,
                        FindPathService findPathService,
@@ -85,6 +90,7 @@ public class TaskService {
                        ReservationService reservationService,
                        TransactionTemplate transactionTemplate) {
         this.rcsTaskRepository = rcsTaskRepository;
+        this.rcsTaskDetailRepository = rcsTaskDetailRepository;
         this.rcsAgvRepository = rcsAgvRepository;
         this.mapService = mapService;
         this.findPathService = findPathService;
@@ -183,6 +189,20 @@ public class TaskService {
     }
 
     /**
+     * 查詢指定任務的各階段執行明細 (依 step_seq 排序)
+     */
+    @Transactional(readOnly = true)
+    public List<TaskDetailResponse> getTaskDetails(String taskCode) {
+        if (!rcsTaskRepository.existsById(taskCode)) {
+            throw new NoSuchElementException("找不到指定的任務代碼: " + taskCode);
+        }
+        return rcsTaskDetailRepository.findByTaskCodeOrderByStepSeqAsc(taskCode)
+                .stream()
+                .map(TaskDetailResponse::from)
+                .toList();
+    }
+
+    /**
      * 取消任務 (僅限 PENDING 或 RUNNING 狀態)
      */
     @Transactional
@@ -207,9 +227,21 @@ public class TaskService {
             });
         }
 
+        OffsetDateTime now = OffsetDateTime.now();
         task.setStatus("FAILED");
-        task.setFinishedAt(OffsetDateTime.now());
+        task.setFinishedAt(now);
         rcsTaskRepository.saveAndFlush(task);
+
+        // 將尚未完成的階段明細一併標記為 FAILED
+        List<RcsTaskDetail> details = rcsTaskDetailRepository.findByTaskCodeOrderByStepSeqAsc(taskCode);
+        for (RcsTaskDetail detail : details) {
+            if ("PENDING".equals(detail.getStatus()) || "RUNNING".equals(detail.getStatus())) {
+                detail.setStatus("FAILED");
+                detail.setFinishedAt(now);
+                rcsTaskDetailRepository.save(detail);
+            }
+        }
+        rcsTaskDetailRepository.flush();
         log.info("已取消任務 [{}]，狀態更新為 FAILED", taskCode);
 
         // 若剛釋放了車輛，於交易提交後非同步派發後續等待中的任務
@@ -286,9 +318,19 @@ public class TaskService {
 
         // 若完成的是第一階段 (抵達取貨點 startPoint)，緊接著規劃第二階段 (startPoint -> targetPoint)
         if (orderId != null && orderId.endsWith(LEG_PICKUP_SUFFIX)) {
+            OffsetDateTime now = OffsetDateTime.now();
             if (agv != null) {
                 rcsAgvRepository.saveAndFlush(agv);
             }
+
+            // 更新第一階段明細為 COMPLETED
+            rcsTaskDetailRepository.findByTaskCodeAndStepType(task.getTaskCode(), "PICKUP")
+                    .ifPresent(pickupDetail -> {
+                        pickupDetail.setStatus("COMPLETED");
+                        pickupDetail.setFinishedAt(now);
+                        rcsTaskDetailRepository.saveAndFlush(pickupDetail);
+                    });
+
             log.info("車輛 [{}] 已抵達任務 [{}] 取貨點 [{}]，開始啟動第二階段前往卸貨點 [{}]",
                     agvCode, task.getTaskCode(), task.getStartPoint(), task.getTargetPoint());
 
@@ -300,8 +342,15 @@ public class TaskService {
                 log.error("任務 [{}] 第二階段找不到從 [{}] 至 [{}] 的路徑，標記為 FAILED",
                         task.getTaskCode(), task.getStartPoint(), task.getTargetPoint());
                 task.setStatus("FAILED");
-                task.setFinishedAt(OffsetDateTime.now());
+                task.setFinishedAt(now);
                 rcsTaskRepository.saveAndFlush(task);
+
+                rcsTaskDetailRepository.findByTaskCodeAndStepType(task.getTaskCode(), "DELIVERY")
+                        .ifPresent(deliveryDetail -> {
+                            deliveryDetail.setStatus("FAILED");
+                            deliveryDetail.setFinishedAt(now);
+                            rcsTaskDetailRepository.saveAndFlush(deliveryDetail);
+                        });
 
                 if (agv != null) {
                     agv.setStatus("IDLE");
@@ -312,6 +361,14 @@ public class TaskService {
                 return null;
             }
 
+            // 更新第二階段明細為 RUNNING 並記錄開始時間
+            rcsTaskDetailRepository.findByTaskCodeAndStepType(task.getTaskCode(), "DELIVERY")
+                    .ifPresent(deliveryDetail -> {
+                        deliveryDetail.setStatus("RUNNING");
+                        deliveryDetail.setStartedAt(now);
+                        rcsTaskDetailRepository.saveAndFlush(deliveryDetail);
+                    });
+
             return new DispatchCommand(
                     task.getMapCode(),
                     agvCode,
@@ -321,10 +378,18 @@ public class TaskService {
             );
         }
 
-        // 第二階段完成：標記任務 COMPLETED 並釋放車輛
+        // 第二階段完成：標記任務與 DELIVERY 明細為 COMPLETED 並釋放車輛
+        OffsetDateTime finishedAt = OffsetDateTime.now();
         task.setStatus("COMPLETED");
-        task.setFinishedAt(OffsetDateTime.now());
+        task.setFinishedAt(finishedAt);
         rcsTaskRepository.saveAndFlush(task);
+
+        rcsTaskDetailRepository.findByTaskCodeAndStepType(task.getTaskCode(), "DELIVERY")
+                .ifPresent(deliveryDetail -> {
+                    deliveryDetail.setStatus("COMPLETED");
+                    deliveryDetail.setFinishedAt(finishedAt);
+                    rcsTaskDetailRepository.saveAndFlush(deliveryDetail);
+                });
 
         if (agv != null) {
             agv.setStatus("IDLE");
@@ -437,6 +502,7 @@ public class TaskService {
             }
 
             // 更新任務與車輛狀態為 RUNNING
+            OffsetDateTime now = OffsetDateTime.now();
             task.setAgvCode(agv.getAgvCode());
             task.setStatus("RUNNING");
             rcsTaskRepository.saveAndFlush(task);
@@ -444,6 +510,9 @@ public class TaskService {
             agv.setStatus("RUNNING");
             agv.setCurrentTaskId(task.getTaskCode());
             rcsAgvRepository.saveAndFlush(agv);
+
+            // 建立任務階段明細 (rcs_task_detail)
+            createTaskDetails(task, agv.getAgvCode(), currentPoint, needPickupLeg, now);
 
             log.info("任務 [{}] 已指派給車輛 [{}]，啟動{}路段: {} -> {}",
                     task.getTaskCode(), agv.getAgvCode(),
@@ -500,5 +569,46 @@ public class TaskService {
         double dx = pickupNode.x() - ax;
         double dy = pickupNode.y() - ay;
         return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    /**
+     * 依任務是否需要第一階段取貨，初始化 rcs_task_detail 階段明細紀錄
+     */
+    private void createTaskDetails(RcsTask task, String agvCode, String currentPoint,
+                                   boolean needPickupLeg, OffsetDateTime now) {
+        if (needPickupLeg) {
+            RcsTaskDetail pickupStep = new RcsTaskDetail();
+            pickupStep.setTaskCode(task.getTaskCode());
+            pickupStep.setStepSeq(1);
+            pickupStep.setStepType("PICKUP");
+            pickupStep.setAgvCode(agvCode);
+            pickupStep.setFromPoint(currentPoint);
+            pickupStep.setToPoint(task.getStartPoint());
+            pickupStep.setStatus("RUNNING");
+            pickupStep.setStartedAt(now);
+
+            RcsTaskDetail deliveryStep = new RcsTaskDetail();
+            deliveryStep.setTaskCode(task.getTaskCode());
+            deliveryStep.setStepSeq(2);
+            deliveryStep.setStepType("DELIVERY");
+            deliveryStep.setAgvCode(agvCode);
+            deliveryStep.setFromPoint(task.getStartPoint());
+            deliveryStep.setToPoint(task.getTargetPoint());
+            deliveryStep.setStatus("PENDING");
+
+            rcsTaskDetailRepository.saveAllAndFlush(List.of(pickupStep, deliveryStep));
+        } else {
+            RcsTaskDetail deliveryStep = new RcsTaskDetail();
+            deliveryStep.setTaskCode(task.getTaskCode());
+            deliveryStep.setStepSeq(1);
+            deliveryStep.setStepType("DELIVERY");
+            deliveryStep.setAgvCode(agvCode);
+            deliveryStep.setFromPoint(task.getStartPoint());
+            deliveryStep.setToPoint(task.getTargetPoint());
+            deliveryStep.setStatus("RUNNING");
+            deliveryStep.setStartedAt(now);
+
+            rcsTaskDetailRepository.saveAndFlush(deliveryStep);
+        }
     }
 }
