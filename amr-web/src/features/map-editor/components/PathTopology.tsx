@@ -16,6 +16,9 @@ interface PathTopologyProps {
   edges: SceneEdge[]
   selectedPointCode?: string | null
   selectedLineCode?: string | null
+  /** 任務表單目前選中的取貨點 (綠框標記) 與卸貨點 (藍框標記) */
+  pickupPointCode?: string | null
+  dropoffPointCode?: string | null
   showLabels?: boolean
   /** 目前被 AGV 鎖定佔用的點位對應表 (Key = pointCode, Value = agvCode) */
   lockedPointOwnerMap?: ReadonlyMap<string, string>
@@ -42,6 +45,8 @@ export default function PathTopology({
   edges,
   selectedPointCode,
   selectedLineCode,
+  pickupPointCode,
+  dropoffPointCode,
   showLabels = true,
   lockedPointOwnerMap,
   onSelectPoint,
@@ -117,28 +122,40 @@ export default function PathTopology({
       {/* 各路徑點標記 */}
       {points.map((point) => {
         const isSelected = selectedPointCode === point.code
+        const isPickup = pickupPointCode === point.code
+        const isDropoff = dropoffPointCode === point.code
         const lockedByAgv = lockedPointOwnerMap?.get(point.code)
         const isLocked = Boolean(lockedByAgv)
         const baseColor = POINT_COLORS[point.type] ?? POINT_COLORS.NORMAL
         const color = isLocked ? '#f59e0b' : baseColor
+        const baseName = point.name?.trim() || point.code
+        const rolePrefix = isPickup ? '[取] ' : isDropoff ? '[卸] ' : ''
         const label = lockedByAgv
-          ? `${point.name?.trim() || point.code} 🔒${lockedByAgv}`
-          : (point.name?.trim() || point.code)
+          ? `${rolePrefix}${baseName} 🔒${lockedByAgv}`
+          : `${rolePrefix}${baseName}`
+        const isHighlighted = isSelected || isPickup || isDropoff
 
         return (
           <group
             key={point.code}
             position={point.position}
             onClick={(e) => {
+              if (!onSelectPoint) return
               e.stopPropagation()
-              onSelectPoint?.(point.code)
+              onSelectPoint(point.code)
             }}
           >
             {/* 圓盤底座 */}
             <mesh
               rotation={[-Math.PI / 2, 0, 0]}
-              onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer' }}
-              onPointerOut={() => { document.body.style.cursor = 'default' }}
+              onPointerOver={(e) => {
+                if (!onSelectPoint) return
+                e.stopPropagation()
+                document.body.style.cursor = 'pointer'
+              }}
+              onPointerOut={() => {
+                if (onSelectPoint) document.body.style.cursor = 'default'
+              }}
             >
               <circleGeometry args={[POINT_RADIUS, 16]} />
               <meshBasicMaterial color={color} />
@@ -156,14 +173,14 @@ export default function PathTopology({
                   title={label}
                   style={{
                     display: 'block',
-                    maxWidth: 84,
+                    maxWidth: 96,
                     overflow: 'hidden',
-                    color: isSelected ? '#e0f2fe' : '#94a3b8',
+                    color: isPickup ? '#34d399' : isDropoff ? '#38bdf8' : isSelected ? '#e0f2fe' : '#94a3b8',
                     fontFamily: 'monospace',
                     fontSize: 10,
-                    fontWeight: isSelected ? 700 : 500,
+                    fontWeight: isHighlighted ? 700 : 500,
                     lineHeight: 1.2,
-                    opacity: isSelected ? 1 : 0.78,
+                    opacity: isHighlighted ? 1 : 0.78,
                     textAlign: 'center',
                     textOverflow: 'ellipsis',
                     textShadow: '0 1px 2px #05102b',
@@ -186,17 +203,39 @@ export default function PathTopology({
             <mesh
               visible={false}
               position={[0, 0.2, 0]}
-              onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer' }}
-              onPointerOut={() => { document.body.style.cursor = 'default' }}
+              onPointerOver={(e) => {
+                if (!onSelectPoint) return
+                e.stopPropagation()
+                document.body.style.cursor = 'pointer'
+              }}
+              onPointerOut={() => {
+                if (onSelectPoint) document.body.style.cursor = 'default'
+              }}
             >
               <cylinderGeometry args={[0.5, 0.5, 0.4, 12]} />
             </mesh>
 
-            {/* 選取光環 (當前被點選時顯示亮藍色外圈) */}
+            {/* 選取光環 (編輯模式點選時顯示亮藍色外圈) */}
             {isSelected && (
               <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={1000}>
                 <ringGeometry args={[POINT_RADIUS + 0.08, POINT_RADIUS + 0.18, 24]} />
                 <meshBasicMaterial color="#38bdf8" transparent opacity={0.9} depthTest={false} depthWrite={false} />
+              </mesh>
+            )}
+
+            {/* 任務取貨點標記光環 (翠綠色外圈) */}
+            {isPickup && (
+              <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={1001}>
+                <ringGeometry args={[POINT_RADIUS + 0.12, POINT_RADIUS + 0.26, 24]} />
+                <meshBasicMaterial color="#10b981" transparent opacity={0.95} depthTest={false} depthWrite={false} />
+              </mesh>
+            )}
+
+            {/* 任務卸貨點標記光環 (天藍色外圈) */}
+            {isDropoff && (
+              <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={1001}>
+                <ringGeometry args={[POINT_RADIUS + 0.12, POINT_RADIUS + 0.26, 24]} />
+                <meshBasicMaterial color="#38bdf8" transparent opacity={0.95} depthTest={false} depthWrite={false} />
               </mesh>
             )}
 

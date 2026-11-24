@@ -34,6 +34,8 @@ import Station  from '../objects/Station'
 import Conveyor from '../objects/Conveyor'
 import Agv from '../objects/Agv'
 import PathTopology from '../components/PathTopology'
+import { TaskSidebar } from '../../task'
+import type { TaskAgvOption, TaskPointOption, TaskPointPickField } from '../../task'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 場景 HUD 覆蓋層 (顯示於畫面左下角，不遮蔽上方工具列)
@@ -107,12 +109,16 @@ interface SceneContentProps {
   poseMapRef: RefObject<Map<string, AgvLivePose>>
   lockedPointOwnerMap: ReadonlyMap<string, string>
   mode: 'view' | 'edit'
+  taskStartPoint: string | null
+  taskTargetPoint: string | null
+  taskPickingActive: boolean
   currentTool: ReturnType<typeof useMapEditorState>['currentTool']
   settings: ReturnType<typeof useMapEditorState>['settings']
   selectedTarget: ReturnType<typeof useMapEditorState>['selectedTarget']
   onSelectTarget: (target: SelectedTarget) => void
   onFloorClick: (point3D: [number, number, number]) => void
   onPointClick: (code: string) => void
+  onTaskPointPick: (code: string) => void
   onUpdatePointPosition: (code: string, newPos: [number, number, number]) => void
   onUpdateObjectTransform: (id: number, newPos: [number, number, number], rotY: number) => void
   onDraggingChange: (isDragging: boolean) => void
@@ -124,12 +130,16 @@ function SceneContent({
   poseMapRef,
   lockedPointOwnerMap,
   mode,
+  taskStartPoint,
+  taskTargetPoint,
+  taskPickingActive,
   currentTool,
   settings,
   selectedTarget,
   onSelectTarget,
   onFloorClick,
   onPointClick,
+  onTaskPointPick,
   onUpdatePointPosition,
   onUpdateObjectTransform,
   onDraggingChange,
@@ -190,15 +200,17 @@ function SceneContent({
         cellSize={1}
       />
 
-      {/* ── 拓撲路徑 (支援點位點選) ─────────────────────────────────── */}
+      {/* ── 拓撲路徑 (支援編輯點選與檢視模式任務選點) ──────────────────── */}
       <PathTopology
         points={points}
         edges={edges}
         selectedPointCode={selectedTarget?.type === 'POINT' ? (selectedTarget.id as string) : null}
         selectedLineCode={selectedTarget?.type === 'LINE' ? (selectedTarget.id as string) : null}
+        pickupPointCode={mode === 'view' ? taskStartPoint : null}
+        dropoffPointCode={mode === 'view' ? taskTargetPoint : null}
         showLabels={settings.showLabels}
         lockedPointOwnerMap={lockedPointOwnerMap}
-        onSelectPoint={mode === 'edit' ? onPointClick : undefined}
+        onSelectPoint={mode === 'edit' ? onPointClick : (taskPickingActive ? onTaskPointPick : undefined)}
         onSelectLine={mode === 'edit' && ['select', 'translate', 'rotate', 'delete'].includes(currentTool)
           ? code => onSelectTarget({ type: 'LINE', id: code }) : undefined}
       />
@@ -310,6 +322,10 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
   const [isSaving, setIsSaving] = useState(false)
   const [isDraggingGizmo, setIsDraggingGizmo] = useState(false)
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
+  // 檢視模式任務表單 3D 選點狀態 (僅影響點位光環，不介入輪詢重繪)
+  const [taskStartPoint, setTaskStartPoint] = useState<string | null>(null)
+  const [taskTargetPoint, setTaskTargetPoint] = useState<string | null>(null)
+  const [taskPickingField, setTaskPickingField] = useState<TaskPointPickField>(null)
 
   // 編輯器狀態管理
   const {
@@ -350,6 +366,37 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
     agv.posX != null && Number.isFinite(agv.posX) &&
     agv.posY != null && Number.isFinite(agv.posY)
   ), [agvs, sceneData?.mapCode])
+
+  // 轉換點位與車輛資料供右側 TaskSidebar 下拉選單使用
+  const taskPointOptions = useMemo<TaskPointOption[]>(() => (
+    sceneData ? sceneData.points.map((pt) => ({ code: pt.code, name: pt.name, type: pt.type })) : []
+  ), [sceneData])
+
+  const taskAgvOptions = useMemo<TaskAgvOption[]>(() => (
+    visibleAgvs.map((agv) => ({
+      agvCode: agv.agvCode,
+      status: agv.status,
+      currentPoint: agv.currentPoint,
+    }))
+  ), [visibleAgvs])
+
+  // 檢視模式下直接於 3D 場景點選取貨點 / 卸貨點
+  const handleTaskPointPick = useCallback((code: string) => {
+    if (taskPickingField === 'start') {
+      setTaskStartPoint(code)
+      notify.success(`🎯 已選取取貨點：${code}`)
+      if (!taskTargetPoint) {
+        setTaskPickingField('target')
+        notify.info('請繼續點擊 3D 地圖路徑點作為【卸貨點】', 'task-3d-pick')
+      } else {
+        setTaskPickingField(null)
+      }
+    } else if (taskPickingField === 'target') {
+      setTaskTargetPoint(code)
+      setTaskPickingField(null)
+      notify.success(`🎯 已選取卸貨點：${code}`)
+    }
+  }, [taskPickingField, taskTargetPoint, notify])
 
   // 選取點位或物件時，自動切換至平移工具顯示 Gizmo
   const handleSelectTarget = useCallback(
@@ -647,6 +694,63 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
         }} />
       )}
 
+      {/* ── 檢視模式 3D 選點提示橫幅 ──────────────────────────────────── */}
+      {mode === 'view' && taskPickingField && (
+        <div style={{
+          position: 'absolute',
+          top: 16,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 60,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          background: 'rgba(5, 16, 43, 0.94)',
+          border: `1px solid ${taskPickingField === 'start' ? '#10b981' : '#38bdf8'}`,
+          borderRadius: 999,
+          padding: '6px 16px',
+          color: '#f8fafc',
+          fontSize: 13,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.45)',
+        }}>
+          <span>
+            🎯 請點擊 3D 路徑點作為
+            <strong style={{ color: taskPickingField === 'start' ? '#34d399' : '#38bdf8', marginLeft: 4 }}>
+              {taskPickingField === 'start' ? '取貨點 (Start)' : '卸貨點 (Target)'}
+            </strong>
+          </span>
+          <button
+            onClick={() => setTaskPickingField(null)}
+            style={{
+              background: 'transparent',
+              border: '1px solid #475569',
+              color: '#cbd5e1',
+              borderRadius: 999,
+              padding: '2px 10px',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            取消
+          </button>
+        </div>
+      )}
+
+      {/* ── 右側可收合任務調度側邊欄 (僅於 3D 檢視模式顯示) ────────────── */}
+      {mode === 'view' && sceneData && (
+        <TaskSidebar
+          mapCode={sceneData.mapCode}
+          points={taskPointOptions}
+          agvs={taskAgvOptions}
+          startPoint={taskStartPoint}
+          targetPoint={taskTargetPoint}
+          pickingField={taskPickingField}
+          onChangeStartPoint={setTaskStartPoint}
+          onChangeTargetPoint={setTaskTargetPoint}
+          onChangePickingField={setTaskPickingField}
+        />
+      )}
+
       {/* ── HUD 覆蓋層 (畫面左下角) ──────────────────────────────────── */}
       <SceneHud
         sceneData={sceneData}
@@ -679,12 +783,16 @@ export default function FactoryScene({ mapCode, mode = 'view', onBack }: Factory
               poseMapRef={poseMapRef}
               lockedPointOwnerMap={lockedPointOwnerMap}
               mode={mode}
+              taskStartPoint={taskStartPoint}
+              taskTargetPoint={taskTargetPoint}
+              taskPickingActive={taskPickingField !== null}
               currentTool={currentTool}
               settings={settings}
               selectedTarget={selectedTarget}
               onSelectTarget={handleSelectTarget}
               onFloorClick={handleFloorClick}
               onPointClick={handlePointClick}
+              onTaskPointPick={handleTaskPointPick}
               onUpdatePointPosition={handleUpdatePointPosition}
               onUpdateObjectTransform={handleUpdateObjectTransform}
               onDraggingChange={setIsDraggingGizmo}

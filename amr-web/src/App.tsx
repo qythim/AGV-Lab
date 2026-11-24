@@ -37,13 +37,13 @@ export default function App() {
   if (page === '3d-viewer' || page === '3d-editor') {
     return (
       <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
-        {/* 返回按鈕 */}
+        {/* 返回按鈕 (置於左上角，避免遮蔽右側任務調度側邊欄) */}
         {page === '3d-viewer' && <button
           onClick={handleBackToManagement}
           style={{
             position: 'absolute',
-            top: 12,
-            right: 12,
+            top: 16,
+            left: 20,
             zIndex: 100,
             background: 'rgba(5,16,43,0.9)',
             border: '1px solid #FF8C00',
