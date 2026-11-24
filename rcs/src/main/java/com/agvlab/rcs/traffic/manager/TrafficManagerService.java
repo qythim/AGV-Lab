@@ -42,6 +42,7 @@ public class TrafficManagerService {
     // 車輛執行中路徑與狀態快取
     private final Map<String, List<String>> activePathMap = new ConcurrentHashMap<>();
     private final Map<String, String> activeOrderIdMap = new ConcurrentHashMap<>();
+    private final Map<String, Long> activeOrderUpdateIdMap = new ConcurrentHashMap<>();
     private final Map<String, String> agvMapCodeMap = new ConcurrentHashMap<>();
     private final Map<String, String> lastPointMap = new ConcurrentHashMap<>();
     private final Map<String, Long> lastCheckTimeMap = new ConcurrentHashMap<>();
@@ -72,6 +73,7 @@ public class TrafficManagerService {
                                                   String startPoint, List<String> fullPath) {
         activePathMap.put(agvCode, fullPath);
         activeOrderIdMap.put(agvCode, orderId != null ? orderId : ("order_" + agvCode));
+        activeOrderUpdateIdMap.remove(agvCode);
         agvMapCodeMap.put(agvCode, mapCode);
         lastPointMap.put(agvCode, startPoint);
         lastCheckTimeMap.put(agvCode, System.currentTimeMillis());
@@ -95,6 +97,7 @@ public class TrafficManagerService {
     public void cancelNavigation(String agvCode) {
         activePathMap.remove(agvCode);
         activeOrderIdMap.remove(agvCode);
+        activeOrderUpdateIdMap.remove(agvCode);
         lastSentPointsMap.remove(agvCode);
         vda5050MqttService.sendCancelOrder(agvCode);
         log.info("已取消車輛 [{}] 的導航路徑並下發 cancelOrder 停止指令", agvCode);
@@ -131,6 +134,7 @@ public class TrafficManagerService {
         String finalPoint = activePath.get(activePath.size() - 1);
         if (currentPoint.equals(finalPoint)) {
             String completedOrderId = activeOrderIdMap.remove(agvCode);
+            activeOrderUpdateIdMap.remove(agvCode);
             activePathMap.remove(agvCode);
             lastSentPointsMap.remove(agvCode);
             log.info("車輛 [{}] 已抵達導航路段終點 [{}] (訂單: {})", agvCode, currentPoint, completedOrderId);
@@ -202,7 +206,11 @@ public class TrafficManagerService {
                         ? mapService.getGraph(mapCode)
                         : mapService.getActiveGraph();
                 MapGraph.ResolvedPath route = graph.resolvePath(res.holdingPoints());
-                vda5050MqttService.sendOrder(agvCode, orderId, route);
+                // 同一筆 orderId 首次下發時 orderUpdateId 為 0，後續每次滑動視窗遞增 1
+                long orderUpdateId = activeOrderUpdateIdMap.compute(
+                        agvCode, (k, v) -> (v == null) ? 0L : (v + 1L)
+                );
+                vda5050MqttService.sendOrder(agvCode, orderId, orderUpdateId, route);
                 lastSentPointsMap.put(agvCode, List.copyOf(res.holdingPoints()));
             }
         } else if (res.blockPoint() != null) {

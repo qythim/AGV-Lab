@@ -6,7 +6,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+
+import com.agvlab.rcs.agv.event.SimFleetSyncEvent;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -41,6 +44,7 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     // 用於比對座標或狀態是否發生變化 (Delta Update)
     private record AgvPoseSnapshot(String mapCode, double x, double y, double angle, String status, String currentPoint) {}
     private final Map<String, AgvPoseSnapshot> lastBroadcastPoseMap = new ConcurrentHashMap<>();
+    private final AtomicLong orderHeaderId = new AtomicLong(0);
     private final AtomicLong instantActionHeaderId = new AtomicLong(0);
 
     private final ApplicationEventPublisher eventPublisher;
@@ -66,6 +70,11 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     // VDA 5050 通配符訂閱主題：監聽 agv-lab 旗下所有車輛的狀態與連線生命週期
     private static final String STATE_TOPIC_WILDCARD = "uagv/v2/agv-lab/+/state";
     private static final String CONNECTION_TOPIC_WILDCARD = "uagv/v2/agv-lab/+/connection";
+
+    // ROS 2 模擬器車隊生命周期同步主題 (獨立於 VDA 5050 標準之外)
+    private static final String SIM_FLEET_CONTROL_TOPIC = "sim/fleet/control";
+    private static final String SIM_FLEET_SNAPSHOT_TOPIC = "sim/fleet/snapshot";
+    private volatile String lastFleetSnapshotJson;
 
     @PostConstruct
     public void init() {
@@ -96,6 +105,10 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             // 訂閱 QoS 0 狀態流 (高頻位置資訊) 與 QoS 1 連線狀態 (含保留訊息與 LWT 遺囑)
             this.mqttClient.subscribe(STATE_TOPIC_WILDCARD, 0);
             this.mqttClient.subscribe(CONNECTION_TOPIC_WILDCARD, 1);
+            // 若已有車隊快照，於連線就緒或重連時確保發佈保留快照至 Broker
+            if (this.lastFleetSnapshotJson != null) {
+                publishSimSnapshotJson(this.lastFleetSnapshotJson);
+            }
         } catch (MqttException e) {
             log.error("訂閱主題失敗: {}", e.getMessage(), e);
         }
@@ -161,11 +174,12 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     /**
      * 將已驗證之地圖路徑快照封裝為 VDA 5050 Order 並發送至指定車輛
      *
-     * @param agvCode 車輛代碼 (例如: "AGV-01")
-     * @param orderId 任務代碼 (例如: "TASK-001:DELIVERY")
-     * @param route   由 MapGraph 解析完成之點位與邊資料
+     * @param agvCode       車輛代碼 (例如: "AGV-01")
+     * @param orderId       任務代碼 (例如: "TASK-001:DELIVERY")
+     * @param orderUpdateId 訂單展延序號 (新訂單自 0 起算，滑動視窗每次遞增 1)
+     * @param route         由 MapGraph 解析完成之點位與邊資料
      */
-    public void sendOrder(String agvCode, String orderId, MapGraph.ResolvedPath route) {
+    public void sendOrder(String agvCode, String orderId, long orderUpdateId, MapGraph.ResolvedPath route) {
         if (route == null || route.nodes().isEmpty()) {
             return;
         }
@@ -202,7 +216,13 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             }
 
             Map<String, Object> orderPayload = Map.of(
+                    "headerId", orderHeaderId.incrementAndGet(),
+                    "timestamp", Instant.now().toString(),
+                    "version", "2.0.0",
+                    "manufacturer", "agv-lab",
+                    "serialNumber", agvCode,
                     "orderId", orderId,
+                    "orderUpdateId", orderUpdateId,
                     "nodes", nodes,
                     "edges", edges
             );
@@ -214,11 +234,18 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             message.setQos(1);
             this.mqttClient.publish(orderTopic, message);
 
-            log.info("已向車輛 [{}] 發送訂單 [{}]: {}", agvCode, orderId, orderJson);
+            log.info("已向車輛 [{}] 發送訂單 [{} (updateId={})]: {}", agvCode, orderId, orderUpdateId, orderJson);
 
         } catch (Exception e) {
             log.error("向車輛 [{}] 發送訂單時失敗: {}", agvCode, e.getMessage(), e);
         }
+    }
+
+    /**
+     * 向下相容方法：未指定 orderUpdateId 時預設為 0
+     */
+    public void sendOrder(String agvCode, String orderId, MapGraph.ResolvedPath route) {
+        sendOrder(agvCode, orderId, 0L, route);
     }
 
     /**
@@ -286,6 +313,58 @@ public class Vda5050MqttService implements MqttCallbackExtended {
                 Map.of("key", "lastNodeId", "value", pointCode != null ? pointCode : "")
         );
         sendInstantAction(agvCode, "initPosition", "initPos_" + System.currentTimeMillis(), params);
+    }
+
+    /**
+     * 監聽車隊同步事件：發佈 sim/fleet/snapshot (retain=True) 與 sim/fleet/control 即時控制指令
+     */
+    @EventListener
+    public void onSimFleetSync(SimFleetSyncEvent event) {
+        try {
+            Map<String, Object> snapshotPayload = Map.of(
+                    "timestamp", Instant.now().toString(),
+                    "agvs", event.snapshot() != null ? event.snapshot() : List.of()
+            );
+            String snapshotJson = objectMapper.writeValueAsString(snapshotPayload);
+            this.lastFleetSnapshotJson = snapshotJson;
+            publishSimSnapshotJson(snapshotJson);
+
+            String action = event.action();
+            if ("SPAWN".equals(action) || "PLACE".equals(action) || "DESTROY".equals(action)) {
+                Map<String, Object> controlPayload = Map.of(
+                        "action", action,
+                        "agvId", event.agvId() != null ? event.agvId() : "",
+                        "mapId", event.mapId() != null ? event.mapId() : "",
+                        "pointId", event.pointId() != null ? event.pointId() : "",
+                        "x", event.x(),
+                        "y", event.y(),
+                        "theta", event.theta()
+                );
+                String controlJson = objectMapper.writeValueAsString(controlPayload);
+                if (this.mqttClient != null && this.mqttClient.isConnected()) {
+                    MqttMessage msg = new MqttMessage(controlJson.getBytes());
+                    msg.setQos(1);
+                    this.mqttClient.publish(SIM_FLEET_CONTROL_TOPIC, msg);
+                    log.info("已向模擬器發送車隊控制指令 [{}]: {}", SIM_FLEET_CONTROL_TOPIC, controlJson);
+                }
+            }
+        } catch (Exception e) {
+            log.error("發佈模擬器車隊同步訊息失敗: {}", e.getMessage(), e);
+        }
+    }
+
+    private void publishSimSnapshotJson(String snapshotJson) {
+        try {
+            if (this.mqttClient != null && this.mqttClient.isConnected()) {
+                MqttMessage msg = new MqttMessage(snapshotJson.getBytes());
+                msg.setQos(1);
+                msg.setRetained(true);
+                this.mqttClient.publish(SIM_FLEET_SNAPSHOT_TOPIC, msg);
+                log.info("已更新模擬器車隊保留快照 [{}]: {}", SIM_FLEET_SNAPSHOT_TOPIC, snapshotJson);
+            }
+        } catch (Exception e) {
+            log.warn("發佈車隊保留快照失敗: {}", e.getMessage());
+        }
     }
 
     @PreDestroy

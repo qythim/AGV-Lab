@@ -6,8 +6,14 @@ import com.agvlab.rcs.agv.entity.RcsAgv;
 import com.agvlab.rcs.agv.dto.AgvResponse;
 import com.agvlab.rcs.agv.dto.PlaceAgvRequest;
 import com.agvlab.rcs.agv.event.AgvAvailableEvent;
+import com.agvlab.rcs.agv.event.SimFleetSyncEvent;
+import com.agvlab.rcs.agv.event.SimFleetSyncEvent.SimAgvItem;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.dao.DataIntegrityViolationException;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -124,6 +130,15 @@ public class AgvService {
         if ("IDLE".equals(saved.getStatus())) {
             eventPublisher.publishEvent(new AgvAvailableEvent(saved.getAgvCode(), saved.getCurrentMapCode()));
         }
+        publishFleetSyncAfterCommit(
+                "PLACE",
+                saved.getAgvCode(),
+                saved.getCurrentMapCode(),
+                saved.getCurrentPoint(),
+                point.x(),
+                point.y(),
+                Math.toRadians(saved.getAngle() != null ? saved.getAngle() : 0.0)
+        );
         return saved;
     }
 
@@ -152,6 +167,51 @@ public class AgvService {
         agv.setPosX(null);
         agv.setPosY(null);
         agv.setAngle(0.0);
-        return rcsAgvRepository.saveAndFlush(agv);
+        RcsAgv saved = rcsAgvRepository.saveAndFlush(agv);
+        publishFleetSyncAfterCommit("DESTROY", saved.getAgvCode(), "", "", 0.0, 0.0, 0.0);
+        return saved;
+    }
+
+    /**
+     * 系統啟動完成後發布一次車隊全量快照至 MQTT (retain=True)，供 ROS 2 模擬器同步既有車輛
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional(readOnly = true)
+    public void syncFleetSnapshotOnStartup() {
+        List<SimAgvItem> snapshot = buildPlacedFleetSnapshot();
+        eventPublisher.publishEvent(new SimFleetSyncEvent("SNAPSHOT", "", "", "", 0.0, 0.0, 0.0, snapshot));
+    }
+
+    private void publishFleetSyncAfterCommit(String action, String agvId, String mapId,
+                                             String pointId, double x, double y, double thetaRad) {
+        List<SimAgvItem> snapshot = buildPlacedFleetSnapshot();
+        SimFleetSyncEvent syncEvent = new SimFleetSyncEvent(action, agvId, mapId, pointId, x, y, thetaRad, snapshot);
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    eventPublisher.publishEvent(syncEvent);
+                }
+            });
+        } else {
+            eventPublisher.publishEvent(syncEvent);
+        }
+    }
+
+    private List<SimAgvItem> buildPlacedFleetSnapshot() {
+        return rcsAgvRepository.findAll().stream()
+                .filter(a -> a.getCurrentMapCode() != null
+                        && a.getCurrentPoint() != null
+                        && a.getPosX() != null
+                        && a.getPosY() != null)
+                .map(a -> new SimAgvItem(
+                        a.getAgvCode(),
+                        a.getCurrentMapCode(),
+                        a.getCurrentPoint(),
+                        a.getPosX(),
+                        a.getPosY(),
+                        Math.toRadians(a.getAngle() != null ? a.getAngle() : 0.0)
+                ))
+                .toList();
     }
 }
