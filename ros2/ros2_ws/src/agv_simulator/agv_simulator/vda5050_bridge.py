@@ -38,11 +38,14 @@ class Vda5050Bridge(Node):
         self.default_max_speed = self.get_parameter('default_max_speed').get_parameter_value().double_value
 
         self.header_id = 0
+        self.connection_header_id = 0
 
         # MQTT Topic 命名規範 (符合 VDA 5050 標準: uagv/v2/manufacturer/serialNumber/topic)
         self.topic_prefix = f'uagv/v2/{self.manufacturer}/{self.serial_number}'
         self.state_topic = f'{self.topic_prefix}/state'
         self.order_topic = f'{self.topic_prefix}/order'
+        self.instant_actions_topic = f'{self.topic_prefix}/instantActions'
+        self.connection_topic = f'{self.topic_prefix}/connection'
 
         # 1. 初始化 ROS 2 相對 Topic (command / state)，與同 Namespace 下的 virtual_agv 通訊
         self.ros_command_pub = self.create_publisher(
@@ -63,6 +66,14 @@ class Vda5050Bridge(Node):
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
 
+        # 設定 MQTT 遺囑訊息 (LWT)：若節點異常斷線，由 Broker 自動發布 CONNECTIONBROKEN
+        self.mqtt_client.will_set(
+            self.connection_topic,
+            payload=self.build_connection_payload('CONNECTIONBROKEN'),
+            qos=1,
+            retain=True
+        )
+
         try:
             self.get_logger().info(
                 f'[{self.serial_number}] 正在連線至 MQTT Broker ({self.mqtt_broker}:{self.mqtt_port})...'
@@ -77,23 +88,125 @@ class Vda5050Bridge(Node):
             f'(namespace={self.get_namespace()}, init_map_id={self.current_map_id or "未指定"})'
         )
 
+    def build_connection_payload(self, connection_state: str) -> str:
+        """符合 VDA 5050 v2 規範的 connection 訊息內容"""
+        self.connection_header_id += 1
+        return json.dumps({
+            'headerId': self.connection_header_id,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'version': '2.0.0',
+            'manufacturer': self.manufacturer,
+            'serialNumber': self.serial_number,
+            'connectionState': connection_state
+        })
+
+    def publish_connection_state(self, connection_state: str, wait: bool = False):
+        """發佈車輛連線狀態 (ONLINE / OFFLINE) 至保留主題 (retain=True)"""
+        try:
+            payload = self.build_connection_payload(connection_state)
+            msg_info = self.mqtt_client.publish(self.connection_topic, payload, qos=1, retain=True)
+            if wait:
+                msg_info.wait_for_publish(timeout=1.0)
+            self.get_logger().info(
+                f'[{self.serial_number}] 已發佈連線狀態: {connection_state} ({self.connection_topic})'
+            )
+        except Exception as e:
+            self.get_logger().error(f'[{self.serial_number}] 發佈連線狀態 {connection_state} 失敗: {e}')
+
     def on_mqtt_connect(self, client, userdata, flags, rc, *args):
         """當成功連線至 MQTT Broker 時觸發"""
         if rc == 0:
             self.get_logger().info(
-                f'[{self.serial_number}] MQTT 連線成功！開始訂閱訂單 Topic: {self.order_topic}'
+                f'[{self.serial_number}] MQTT 連線成功！開始訂閱 Topic: '
+                f'{self.order_topic}, {self.instant_actions_topic}'
             )
-            self.mqtt_client.subscribe(self.order_topic)
+            self.mqtt_client.subscribe(self.order_topic, qos=1)
+            self.mqtt_client.subscribe(self.instant_actions_topic, qos=1)
+            self.publish_connection_state('ONLINE')
         else:
             self.get_logger().error(f'[{self.serial_number}] MQTT 連線錯誤，返回碼: {rc}')
 
     def on_mqtt_message(self, client, userdata, msg):
         """
+        接收來自 RCS 的 MQTT 訊息，依 Topic 分派至 Order 或 InstantActions 處理器
+        """
+        try:
+            payload = json.loads(msg.payload.decode('utf-8'))
+            if msg.topic == self.instant_actions_topic or msg.topic.endswith('/instantActions'):
+                self.handle_instant_actions(payload)
+            else:
+                self.handle_order(payload)
+        except Exception as e:
+            self.get_logger().error(
+                f'[{self.serial_number}] 解析 MQTT 訊息失敗 (topic={msg.topic}): {e}'
+            )
+
+    def handle_instant_actions(self, payload: dict):
+        """
+        處理 VDA 5050 instantActions 即時指令：
+        支援 startPause、stopPause、cancelOrder、initPosition
+        """
+        actions = payload.get('actions', [])
+        if not isinstance(actions, list) or not actions:
+            self.get_logger().warning(f'[{self.serial_number}] 收到空的 instantActions，忽略執行')
+            return
+
+        for action in actions:
+            action_type = action.get('actionType', '')
+            action_id = action.get('actionId', '')
+            params = self._extract_action_params(action.get('actionParameters'))
+
+            self.get_logger().info(
+                f'[{self.serial_number}] 收到即時動作指令: {action_type} (id={action_id})'
+            )
+
+            if action_type == 'startPause':
+                self._publish_ros_command({'action': 'PAUSE'})
+            elif action_type == 'stopPause':
+                self._publish_ros_command({'action': 'RESUME'})
+            elif action_type == 'cancelOrder':
+                self._publish_ros_command({'action': 'STOP'})
+            elif action_type == 'initPosition':
+                map_id = params.get('mapId')
+                if map_id:
+                    self.current_map_id = str(map_id)
+                ros_cmd = {
+                    'action': 'INIT_POSITION',
+                    'x': float(params.get('x', 0.0)),
+                    'y': float(params.get('y', 0.0)),
+                    'yaw': float(params.get('theta', 0.0)),
+                    'node_id': str(params.get('lastNodeId', ''))
+                }
+                self._publish_ros_command(ros_cmd)
+            else:
+                self.get_logger().warning(
+                    f'[{self.serial_number}] 未支援的 instantAction 類型: {action_type}'
+                )
+
+    @staticmethod
+    def _extract_action_params(raw_params) -> dict:
+        """相容 VDA 5050 標準 [{key, value}] 陣列格式與簡易鍵值字典格式"""
+        if isinstance(raw_params, dict):
+            return raw_params
+        result = {}
+        if isinstance(raw_params, list):
+            for item in raw_params:
+                if isinstance(item, dict) and 'key' in item:
+                    result[str(item['key'])] = item.get('value')
+        return result
+
+    def _publish_ros_command(self, ros_cmd: dict):
+        """發送控制指令至同命名空間下的 virtual_agv"""
+        cmd_msg = String()
+        cmd_msg.data = json.dumps(ros_cmd)
+        self.ros_command_pub.publish(cmd_msg)
+
+    def handle_order(self, payload: dict):
+        """
         接收來自 RCS 的 VDA 5050 Order 訂單
         解析 nodes 與 edges.maxSpeed 後轉換為 ROS 2 虛擬車輛控制指令
         """
         try:
-            payload = json.loads(msg.payload.decode('utf-8'))
             order_id = payload.get('orderId', 'order_unknown')
             self.get_logger().info(f'[{self.serial_number}] 收到 VDA 5050 訂單: {order_id}')
 
@@ -218,7 +331,8 @@ class Vda5050Bridge(Node):
             self.get_logger().error(f'[{self.serial_number}] 轉發 VDA 5050 狀態至 MQTT 失敗: {e}')
 
     def destroy_node(self):
-        """節點關閉時安全中斷 MQTT 連線"""
+        """節點關閉時先發佈 OFFLINE 狀態，再安全中斷 MQTT 連線"""
+        self.publish_connection_state('OFFLINE', wait=True)
         self.mqtt_client.loop_stop()
         self.mqtt_client.disconnect()
         super().destroy_node()

@@ -13,10 +13,12 @@ import jakarta.annotation.PreDestroy;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.agvlab.rcs.map.dto.MapDataDto.LineDto;
 import com.agvlab.rcs.map.dto.MapDataDto.PointDto;
@@ -39,6 +41,7 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     // 用於比對座標或狀態是否發生變化 (Delta Update)
     private record AgvPoseSnapshot(String mapCode, double x, double y, double angle, String status, String currentPoint) {}
     private final Map<String, AgvPoseSnapshot> lastBroadcastPoseMap = new ConcurrentHashMap<>();
+    private final AtomicLong instantActionHeaderId = new AtomicLong(0);
 
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
@@ -60,8 +63,9 @@ public class Vda5050MqttService implements MqttCallbackExtended {
 
     private MqttClient mqttClient;
 
-    // VDA 5050 通配符訂閱主題：監聽 agv-lab 旗下所有車輛的狀態
+    // VDA 5050 通配符訂閱主題：監聽 agv-lab 旗下所有車輛的狀態與連線生命週期
     private static final String STATE_TOPIC_WILDCARD = "uagv/v2/agv-lab/+/state";
+    private static final String CONNECTION_TOPIC_WILDCARD = "uagv/v2/agv-lab/+/connection";
 
     @PostConstruct
     public void init() {
@@ -86,10 +90,12 @@ public class Vda5050MqttService implements MqttCallbackExtended {
 
     @Override
     public void connectComplete(boolean reconnect, String serverURI) {
-        log.info("MQTT 連線就緒 (重連狀態: {})，開始訂閱車輛狀態主題: {}", reconnect, STATE_TOPIC_WILDCARD);
+        log.info("MQTT 連線就緒 (重連狀態: {})，開始訂閱狀態與連線主題: {}, {}",
+                reconnect, STATE_TOPIC_WILDCARD, CONNECTION_TOPIC_WILDCARD);
         try {
-            // 訂閱 QoS 0 狀態流 (高頻位置資訊)
+            // 訂閱 QoS 0 狀態流 (高頻位置資訊) 與 QoS 1 連線狀態 (含保留訊息與 LWT 遺囑)
             this.mqttClient.subscribe(STATE_TOPIC_WILDCARD, 0);
+            this.mqttClient.subscribe(CONNECTION_TOPIC_WILDCARD, 1);
         } catch (MqttException e) {
             log.error("訂閱主題失敗: {}", e.getMessage(), e);
         }
@@ -105,26 +111,46 @@ public class Vda5050MqttService implements MqttCallbackExtended {
         String payload = new String(message.getPayload());
         try {
             log.debug("收到 MQTT 主題 [{}] 訊息: {}", topic, payload);
-            JsonNode root = objectMapper.readTree(payload);
-            String agvCode = root.path("serialNumber").asText();
-            String currentPoint = root.path("lastNodeId").asText();
-            String mapCode = root.path("agvPosition").path("mapId").asText();
-            boolean driving = root.path("driving").asBoolean();
-            double x = root.path("agvPosition").path("x").asDouble();
-            double y = root.path("agvPosition").path("y").asDouble();
-            double theta = root.path("agvPosition").path("theta").asDouble();
-
-            if (agvCode.isEmpty()) return;
-
-            // 1. 即時推送位置變化至前端 WebSocket (Delta Update，不查詢 Redis)
-            broadcastPoseIfChanged(mapCode, agvCode, currentPoint, driving, x, y, theta);
-
-            // 2. 發布狀態回報事件，交由 TrafficManagerService 處理交通申請與排隊調度
-            eventPublisher.publishEvent(new AgvStateReportEvent(mapCode, agvCode, currentPoint));
-
+            if (topic.endsWith("/connection")) {
+                handleConnectionMessage(payload);
+                return;
+            }
+            handleStateMessage(payload);
         } catch (Exception e) {
-            log.error("解析 VDA 5050 狀態封包失敗: {}, payload: {}", e.getMessage(), payload);
+            log.error("解析 VDA 5050 訊息失敗 [{}]: {}, payload: {}", topic, e.getMessage(), payload);
         }
+    }
+
+    private void handleConnectionMessage(String payload) throws Exception {
+        JsonNode root = objectMapper.readTree(payload);
+        String agvCode = root.path("serialNumber").asText();
+        String connectionState = root.path("connectionState").asText();
+        if (agvCode.isEmpty()) return;
+
+        if ("CONNECTIONBROKEN".equals(connectionState)) {
+            log.warn("車輛 [{}] 異常斷線 (MQTT LWT): {}", agvCode, connectionState);
+        } else {
+            log.info("收到車輛 [{}] 連線狀態更新: {}", agvCode, connectionState);
+        }
+    }
+
+    private void handleStateMessage(String payload) throws Exception {
+        JsonNode root = objectMapper.readTree(payload);
+        String agvCode = root.path("serialNumber").asText();
+        String currentPoint = root.path("lastNodeId").asText();
+        String mapCode = root.path("agvPosition").path("mapId").asText();
+        boolean driving = root.path("driving").asBoolean();
+        double x = root.path("agvPosition").path("x").asDouble();
+        double y = root.path("agvPosition").path("y").asDouble();
+        double theta = root.path("agvPosition").path("theta").asDouble();
+
+        if (agvCode.isEmpty()) return;
+
+        // 1. 即時推送位置變化至前端 WebSocket (Delta Update，不查詢 Redis)
+        broadcastPoseIfChanged(mapCode, agvCode, currentPoint, driving, x, y, theta);
+
+        // 2. 發布狀態回報事件，交由 TrafficManagerService 處理交通申請與排隊調度
+        eventPublisher.publishEvent(new AgvStateReportEvent(mapCode, agvCode, currentPoint));
     }
 
     @Override
@@ -193,6 +219,73 @@ public class Vda5050MqttService implements MqttCallbackExtended {
         } catch (Exception e) {
             log.error("向車輛 [{}] 發送訂單時失敗: {}", agvCode, e.getMessage(), e);
         }
+    }
+
+    /**
+     * 發送 VDA 5050 instantActions 即時動作指令至指定車輛
+     *
+     * @param agvCode          車輛代碼 (例如: "AGV-01")
+     * @param actionType       動作類型 (startPause / stopPause / cancelOrder / initPosition)
+     * @param actionId         動作唯一識別碼
+     * @param actionParameters 動作參數清單 (格式: [{"key": "...", "value": ...}])
+     */
+    public void sendInstantAction(String agvCode, String actionType, String actionId,
+                                  List<Map<String, Object>> actionParameters) {
+        if (agvCode == null || agvCode.isBlank() || actionType == null || actionType.isBlank()) {
+            return;
+        }
+
+        try {
+            Map<String, Object> action = Map.of(
+                    "actionType", actionType,
+                    "actionId", (actionId != null && !actionId.isBlank())
+                            ? actionId
+                            : (actionType + "_" + System.currentTimeMillis()),
+                    "blockingType", "HARD",
+                    "actionParameters", (actionParameters != null) ? actionParameters : List.of()
+            );
+
+            Map<String, Object> payload = Map.of(
+                    "headerId", instantActionHeaderId.incrementAndGet(),
+                    "timestamp", Instant.now().toString(),
+                    "version", "2.0.0",
+                    "manufacturer", "agv-lab",
+                    "serialNumber", agvCode,
+                    "actions", List.of(action)
+            );
+
+            String json = objectMapper.writeValueAsString(payload);
+            String topic = String.format("uagv/v2/agv-lab/%s/instantActions", agvCode);
+            MqttMessage message = new MqttMessage(json.getBytes());
+            message.setQos(1);
+            this.mqttClient.publish(topic, message);
+
+            log.info("已向車輛 [{}] 發送即時動作 [{}]: {}", agvCode, actionType, json);
+        } catch (Exception e) {
+            log.error("向車輛 [{}] 發送即時動作 [{}] 失敗: {}", agvCode, actionType, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 向指定車輛發送 cancelOrder 即時指令，要求車輛立即停止並清除當前行程
+     */
+    public void sendCancelOrder(String agvCode) {
+        sendInstantAction(agvCode, "cancelOrder", "cancel_" + System.currentTimeMillis(), List.of());
+    }
+
+    /**
+     * 向指定車輛發送 initPosition 即時指令，同步車輛在地圖上的初始座標與點位
+     */
+    public void sendInitPosition(String agvCode, String mapCode, String pointCode,
+                                 double x, double y, double thetaRad) {
+        List<Map<String, Object>> params = List.of(
+                Map.of("key", "x", "value", x),
+                Map.of("key", "y", "value", y),
+                Map.of("key", "theta", "value", thetaRad),
+                Map.of("key", "mapId", "value", mapCode != null ? mapCode : ""),
+                Map.of("key", "lastNodeId", "value", pointCode != null ? pointCode : "")
+        );
+        sendInstantAction(agvCode, "initPosition", "initPos_" + System.currentTimeMillis(), params);
     }
 
     @PreDestroy

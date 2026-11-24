@@ -102,17 +102,41 @@ class VirtualAGV(Node):
             elif action == 'STOP':
                 self.waypoints = []
                 self.target_index = 0
+                self.task_id = None
                 self.current_linear_velocity = 0.0
                 self.status = 'IDLE'
+                self.get_logger().info(f'[{self.robot_id}] 收到 STOP 指令，已立即停止並清除行程')
+                self.publish_state()
 
             elif action == 'PAUSE':
                 if self.status == 'MOVING':
                     self.current_linear_velocity = 0.0
                     self.status = 'PAUSED'
+                    self.get_logger().info(f'[{self.robot_id}] 收到 PAUSE 指令，已暫停移動')
+                    self.publish_state()
 
             elif action == 'RESUME':
                 if self.status == 'PAUSED':
                     self.status = 'MOVING'
+                    self.get_logger().info(f'[{self.robot_id}] 收到 RESUME 指令，恢復移動')
+                    self.publish_state()
+
+            elif action == 'INIT_POSITION':
+                self.x = float(command.get('x', self.x))
+                self.y = float(command.get('y', self.y))
+                self.yaw = float(command.get('yaw', self.yaw))
+                if 'node_id' in command and command.get('node_id') is not None:
+                    self.last_node_id = str(command.get('node_id'))
+                self.waypoints = []
+                self.target_index = 0
+                self.task_id = None
+                self.current_linear_velocity = 0.0
+                self.status = 'IDLE'
+                self.get_logger().info(
+                    f'[{self.robot_id}] 已重設初始位置: pos=({self.x:.2f}, {self.y:.2f}), '
+                    f'yaw={self.yaw:.2f}, node={self.last_node_id or "無"}'
+                )
+                self.publish_state()
 
         except (ValueError, TypeError, KeyError) as error:
             self.get_logger().error(f'[{self.robot_id}] 無效指令內容: {error}')

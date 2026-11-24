@@ -90,13 +90,14 @@ public class TrafficManagerService {
     }
 
     /**
-     * 取消指定車輛的執行中導航路徑
+     * 取消指定車輛的執行中導航路徑，並立即向車輛下發 VDA 5050 cancelOrder 指令使其原地停止
      */
     public void cancelNavigation(String agvCode) {
         activePathMap.remove(agvCode);
         activeOrderIdMap.remove(agvCode);
         lastSentPointsMap.remove(agvCode);
-        log.info("已取消車輛 [{}] 的導航路徑", agvCode);
+        vda5050MqttService.sendCancelOrder(agvCode);
+        log.info("已取消車輛 [{}] 的導航路徑並下發 cancelOrder 停止指令", agvCode);
     }
 
     /**
