@@ -16,8 +16,12 @@ class Vda5050Bridge(Node):
     2. 接收 MQTT 上的 VDA 5050 Order 訂單 -> 轉換為 ROS 2 控制指令 (command)
     """
 
-    def __init__(self):
-        super().__init__('vda5050_bridge')
+    def __init__(self, *, node_name: str = 'vda5050_bridge', namespace: str = '', parameter_overrides=None):
+        super().__init__(
+            node_name,
+            namespace=namespace,
+            parameter_overrides=parameter_overrides
+        )
 
         # 透過 ROS 2 參數與環境變數動態載入設定，避免硬編碼
         default_mqtt_host = os.getenv('MQTT_HOST', 'mqtt')
@@ -39,6 +43,14 @@ class Vda5050Bridge(Node):
 
         self.header_id = 0
         self.connection_header_id = 0
+
+        # VDA 5050 訂單狀態追蹤 (供 orderUpdateId 驗證與 nodeStates / edgeStates / actionStates / errors 回報)
+        self.current_order_id = ''
+        self.current_order_update_id = 0
+        self.current_order_nodes = []
+        self.current_order_edges = []
+        self.action_states = []
+        self.errors = []
 
         # MQTT Topic 命名規範 (符合 VDA 5050 標準: uagv/v2/manufacturer/serialNumber/topic)
         self.topic_prefix = f'uagv/v2/{self.manufacturer}/{self.serial_number}'
@@ -162,14 +174,25 @@ class Vda5050Bridge(Node):
 
             if action_type == 'startPause':
                 self._publish_ros_command({'action': 'PAUSE'})
+                self._record_action_state(action_id, action_type, 'FINISHED')
             elif action_type == 'stopPause':
                 self._publish_ros_command({'action': 'RESUME'})
+                self._record_action_state(action_id, action_type, 'FINISHED')
             elif action_type == 'cancelOrder':
+                self.current_order_id = ''
+                self.current_order_update_id = 0
+                self.current_order_nodes = []
+                self.current_order_edges = []
                 self._publish_ros_command({'action': 'STOP'})
+                self._record_action_state(action_id, action_type, 'FINISHED')
             elif action_type == 'initPosition':
                 map_id = params.get('mapId')
                 if map_id:
                     self.current_map_id = str(map_id)
+                self.current_order_id = ''
+                self.current_order_update_id = 0
+                self.current_order_nodes = []
+                self.current_order_edges = []
                 ros_cmd = {
                     'action': 'INIT_POSITION',
                     'x': float(params.get('x', 0.0)),
@@ -178,10 +201,22 @@ class Vda5050Bridge(Node):
                     'node_id': str(params.get('lastNodeId', ''))
                 }
                 self._publish_ros_command(ros_cmd)
+                self._record_action_state(action_id, action_type, 'FINISHED')
             else:
                 self.get_logger().warning(
                     f'[{self.serial_number}] 未支援的 instantAction 類型: {action_type}'
                 )
+                self._record_action_state(action_id, action_type, 'FAILED')
+
+    def _record_action_state(self, action_id: str, action_type: str, status: str):
+        """記錄最近執行的即時動作狀態供 VDA 5050 State 回報 (保留最近 10 筆)"""
+        self.action_states.append({
+            'actionId': action_id or f'{action_type}_{self.header_id}',
+            'actionType': action_type,
+            'actionStatus': status
+        })
+        if len(self.action_states) > 10:
+            self.action_states = self.action_states[-10:]
 
     @staticmethod
     def _extract_action_params(raw_params) -> dict:
@@ -201,14 +236,61 @@ class Vda5050Bridge(Node):
         cmd_msg.data = json.dumps(ros_cmd)
         self.ros_command_pub.publish(cmd_msg)
 
+    def apply_place(self, map_id: str, point_id: str, x: float, y: float, theta: float):
+        """供 SimulatorSupervisor 直接重置該車輛之地圖與點位座標，並清除執行中訂單"""
+        if map_id:
+            self.current_map_id = str(map_id)
+        self.current_order_id = ''
+        self.current_order_update_id = 0
+        self.current_order_nodes = []
+        self.current_order_edges = []
+        self._publish_ros_command({
+            'action': 'INIT_POSITION',
+            'x': float(x),
+            'y': float(y),
+            'yaw': float(theta),
+            'node_id': str(point_id or '')
+        })
+
     def handle_order(self, payload: dict):
         """
         接收來自 RCS 的 VDA 5050 Order 訂單
-        解析 nodes 與 edges.maxSpeed 後轉換為 ROS 2 虛擬車輛控制指令
+        依 VDA 5050 v2 規範驗證 orderId 與 orderUpdateId，並解析 nodes 與 edges.maxSpeed
         """
         try:
-            order_id = payload.get('orderId', 'order_unknown')
-            self.get_logger().info(f'[{self.serial_number}] 收到 VDA 5050 訂單: {order_id}')
+            order_id = str(payload.get('orderId', 'order_unknown'))
+            order_update_id = int(payload.get('orderUpdateId', 0))
+
+            # VDA 5050 orderUpdateId 驗證邏輯
+            is_update = False
+            if order_id == self.current_order_id and self.current_order_nodes:
+                if order_update_id == self.current_order_update_id:
+                    self.get_logger().info(
+                        f'[{self.serial_number}] 收到重複的訂單更新 '
+                        f'(orderId={order_id}, orderUpdateId={order_update_id})，靜默忽略'
+                    )
+                    return
+                if order_update_id < self.current_order_update_id:
+                    err_desc = (
+                        f'拒絕過期的 orderUpdateId={order_update_id} '
+                        f'(目前執行中 orderUpdateId={self.current_order_update_id})'
+                    )
+                    self.get_logger().warning(f'[{self.serial_number}] {err_desc}')
+                    self.errors.append({
+                        'errorType': 'orderUpdateError',
+                        'errorLevel': 'WARNING',
+                        'errorDescription': err_desc
+                    })
+                    return
+                is_update = True
+                # 收到合法的新展延版本時，清除先前的 orderUpdateError 警告
+                self.errors = [e for e in self.errors if e.get('errorType') != 'orderUpdateError']
+            else:
+                self.errors = []
+
+            self.get_logger().info(
+                f'[{self.serial_number}] 收到 VDA 5050 訂單: {order_id} (orderUpdateId={order_update_id})'
+            )
 
             # 解析每條邊的速限設定 (以 endNodeId 對應進入該點位前所行經之邊速限)
             edges = payload.get('edges', [])
@@ -246,6 +328,12 @@ class Vda5050Bridge(Node):
                 self.get_logger().warning(f'[{self.serial_number}] 訂單中無有效點位，忽略執行')
                 return
 
+            # 更新當前生效之訂單狀態快照
+            self.current_order_id = order_id
+            self.current_order_update_id = order_update_id
+            self.current_order_nodes = nodes
+            self.current_order_edges = edges
+
             # 若 payload 頂層有提供 mapId 且尚未設定，亦作為備援來源
             if not self.current_map_id and payload.get('mapId'):
                 self.current_map_id = str(payload.get('mapId'))
@@ -260,14 +348,14 @@ class Vda5050Bridge(Node):
             ros_cmd = {
                 'action': 'MOVE',
                 'task_id': order_id,
+                'order_update_id': order_update_id,
+                'is_update': is_update,
                 'map_version': str(payload.get('mapVersion', '1')),
                 'max_speed': command_max_speed,
                 'waypoints': waypoints
             }
 
-            cmd_msg = String()
-            cmd_msg.data = json.dumps(ros_cmd)
-            self.ros_command_pub.publish(cmd_msg)
+            self._publish_ros_command(ros_cmd)
 
             ns = self.get_namespace().rstrip('/')
             cmd_topic = f'{ns}/command' if ns else '/command'
@@ -292,17 +380,42 @@ class Vda5050Bridge(Node):
             x = float(pos.get('x', 0.0))
             y = float(pos.get('y', 0.0))
             theta = float(internal_state.get('orientation', 0.0))
+            status = internal_state.get('status', 'IDLE')
+            current_wp = int(internal_state.get('current_waypoint', 0))
 
-            # 組裝符合 VDA 5050 規範的 State JSON 物件 (使用動態 mapId)
+            # 動態計算尚未走完的 nodeStates 與 edgeStates
+            node_states = []
+            edge_states = []
+            if status in ('MOVING', 'PAUSED') and self.current_order_nodes:
+                for node in self.current_order_nodes[current_wp:]:
+                    node_states.append({
+                        'nodeId': node.get('nodeId', ''),
+                        'sequenceId': node.get('sequenceId', 0),
+                        'released': bool(node.get('released', True)),
+                        'nodePosition': node.get('nodePosition', {})
+                    })
+                edge_start_idx = max(0, current_wp - 1)
+                for edge in self.current_order_edges[edge_start_idx:]:
+                    edge_states.append({
+                        'edgeId': edge.get('edgeId', ''),
+                        'sequenceId': edge.get('sequenceId', 0),
+                        'released': bool(edge.get('released', True))
+                    })
+
+            # 組裝符合 VDA 5050 v2 規範的完整 State JSON 物件
             vda_state = {
                 'headerId': self.header_id,
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'version': '2.0.0',
                 'manufacturer': self.manufacturer,
                 'serialNumber': self.serial_number,
-                'orderId': internal_state.get('task_id') or '',
+                'orderId': internal_state.get('task_id') or self.current_order_id or '',
+                'orderUpdateId': int(internal_state.get('order_update_id', self.current_order_update_id)),
                 'lastNodeId': internal_state.get('last_node_id', ''),
-                'driving': (internal_state.get('status') == 'MOVING'),
+                'driving': (status == 'MOVING'),
+                'paused': (status == 'PAUSED'),
+                'nodeStates': node_states,
+                'edgeStates': edge_states,
                 'agvPosition': {
                     'x': x,
                     'y': y,
@@ -314,11 +427,13 @@ class Vda5050Bridge(Node):
                     'vx': float(internal_state.get('linear_velocity', 0.0)),
                     'omega': 0.0
                 },
+                'actionStates': self.action_states,
                 'batteryState': {
                     'batteryCharge': 98.5,
                     'charging': False
                 },
                 'operatingMode': 'AUTOMATIC',
+                'errors': self.errors,
                 'safetyState': {
                     'eStop': 'None',
                     'fieldViolation': False

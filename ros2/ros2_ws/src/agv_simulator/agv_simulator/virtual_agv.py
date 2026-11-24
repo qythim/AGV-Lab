@@ -12,8 +12,12 @@ class VirtualAGV(Node):
     透過 ROS 2 參數動態設定初始位置、節點編號與速度/加減速上限，避免硬編碼。
     """
 
-    def __init__(self):
-        super().__init__('virtual_agv')
+    def __init__(self, *, node_name: str = 'virtual_agv', namespace: str = '', parameter_overrides=None):
+        super().__init__(
+            node_name,
+            namespace=namespace,
+            parameter_overrides=parameter_overrides
+        )
 
         # 宣告可動態配置的車輛識別、初始姿態與運動學參數
         self.declare_parameter('robot_id', 'AGV-01')
@@ -45,6 +49,7 @@ class VirtualAGV(Node):
         self.target_index = 0
 
         self.task_id = None
+        self.order_update_id = 0
         self.map_version = None
         self.status = 'IDLE'
 
@@ -88,21 +93,35 @@ class VirtualAGV(Node):
                     return
 
                 self.waypoints = waypoints
-                self.target_index = 0
                 self.speed = min(cmd_speed, self.max_speed)
                 self.task_id = command.get('task_id')
+                self.order_update_id = int(command.get('order_update_id', 0))
                 self.map_version = command.get('map_version')
+
+                # 滑動視窗無縫銜接：若首個航點即為車輛當前所在點位，直接從第 2 個航點開始推進，避免原地停頓
+                first_wp = waypoints[0]
+                dist_to_first = math.hypot(
+                    float(first_wp.get('x', 0.0)) - self.x,
+                    float(first_wp.get('y', 0.0)) - self.y
+                )
+                if dist_to_first < 0.05 and len(waypoints) > 1:
+                    self.last_node_id = first_wp.get('nodeId', self.last_node_id)
+                    self.target_index = 1
+                else:
+                    self.target_index = 0
+
                 self.status = 'MOVING'
 
                 self.get_logger().info(
-                    f'[{self.robot_id}] 開始執行任務: {self.task_id} '
-                    f'(點位數: {len(waypoints)}, 上限速度: {self.speed:.2f} m/s)'
+                    f'[{self.robot_id}] 執行訂單: {self.task_id} (updateId={self.order_update_id}, '
+                    f'點位數: {len(waypoints)}, 起始索引: {self.target_index}, 上限速度: {self.speed:.2f} m/s)'
                 )
 
             elif action == 'STOP':
                 self.waypoints = []
                 self.target_index = 0
                 self.task_id = None
+                self.order_update_id = 0
                 self.current_linear_velocity = 0.0
                 self.status = 'IDLE'
                 self.get_logger().info(f'[{self.robot_id}] 收到 STOP 指令，已立即停止並清除行程')
@@ -130,6 +149,7 @@ class VirtualAGV(Node):
                 self.waypoints = []
                 self.target_index = 0
                 self.task_id = None
+                self.order_update_id = 0
                 self.current_linear_velocity = 0.0
                 self.status = 'IDLE'
                 self.get_logger().info(
@@ -187,6 +207,7 @@ class VirtualAGV(Node):
         state = {
             'robot_id': self.robot_id,
             'task_id': self.task_id,
+            'order_update_id': self.order_update_id,
             'map_version': self.map_version,
             'position': {
                 'x': self.x,

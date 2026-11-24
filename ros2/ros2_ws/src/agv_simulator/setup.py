@@ -32,6 +32,7 @@ setup(
         'console_scripts': [
             'virtual_agv = agv_simulator.virtual_agv:main',
             'vda5050_bridge = agv_simulator.vda5050_bridge:main',
+            'sim_supervisor = agv_simulator.sim_supervisor:main',
         ],
     },
 )
