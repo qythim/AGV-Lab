@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
@@ -33,6 +34,7 @@ class Vda5050Bridge(Node):
         self.declare_parameter('mqtt_port', default_mqtt_port)
         self.declare_parameter('init_map_id', '')
         self.declare_parameter('default_max_speed', 1.0)
+        self.declare_parameter('state_publish_rate', 5.0)
 
         self.serial_number = self.get_parameter('robot_id').get_parameter_value().string_value
         self.manufacturer = self.get_parameter('manufacturer').get_parameter_value().string_value
@@ -40,9 +42,20 @@ class Vda5050Bridge(Node):
         self.mqtt_port = self.get_parameter('mqtt_port').get_parameter_value().integer_value
         self.current_map_id = self.get_parameter('init_map_id').get_parameter_value().string_value
         self.default_max_speed = self.get_parameter('default_max_speed').get_parameter_value().double_value
+        self.state_publish_rate = max(
+            1.0,
+            self.get_parameter('state_publish_rate').get_parameter_value().double_value
+        )
 
         self.header_id = 0
         self.connection_header_id = 0
+
+        # MQTT State 節流追蹤：行駛中以 5Hz (200ms) 發送、待機時 1Hz，但節點/狀態/訂單變動時 0ms 立即發送
+        self.last_state_publish_time = 0.0
+        self.last_published_node_id = None
+        self.last_published_status = None
+        self.last_published_order_id = None
+        self.last_published_update_id = None
 
         # VDA 5050 訂單狀態追蹤 (供 orderUpdateId 驗證與 nodeStates / edgeStates / actionStates / errors 回報)
         self.current_order_id = ''
@@ -369,12 +382,12 @@ class Vda5050Bridge(Node):
 
     def on_ros_state_received(self, msg):
         """
-        接收來自 virtual_agv 的內部狀態
-        封裝為 VDA 5050 State 格式發佈至 MQTT
+        接收來自 virtual_agv 的 20Hz 內部狀態：
+        • 一般位移狀態依 state_publish_rate (預設 5Hz / 200ms，待機時 1Hz) 節流發佈至 MQTT
+        • 若發生重要事件 (切換節點 lastNodeId、狀態改變、訂單或 orderUpdateId 變更) 則 0ms 立即發佈
         """
         try:
             internal_state = json.loads(msg.data)
-            self.header_id += 1
 
             pos = internal_state.get('position', {})
             x = float(pos.get('x', 0.0))
@@ -382,6 +395,27 @@ class Vda5050Bridge(Node):
             theta = float(internal_state.get('orientation', 0.0))
             status = internal_state.get('status', 'IDLE')
             current_wp = int(internal_state.get('current_waypoint', 0))
+            last_node_id = internal_state.get('last_node_id', '')
+            order_id = internal_state.get('task_id') or self.current_order_id or ''
+            order_update_id = int(internal_state.get('order_update_id', self.current_order_update_id))
+
+            now = time.monotonic()
+            important_change = (
+                last_node_id != self.last_published_node_id
+                or status != self.last_published_status
+                or order_id != self.last_published_order_id
+                or order_update_id != self.last_published_update_id
+            )
+            min_interval = (1.0 / self.state_publish_rate) if status == 'MOVING' else 1.0
+            if not important_change and (now - self.last_state_publish_time) < min_interval:
+                return
+
+            self.last_state_publish_time = now
+            self.last_published_node_id = last_node_id
+            self.last_published_status = status
+            self.last_published_order_id = order_id
+            self.last_published_update_id = order_update_id
+            self.header_id += 1
 
             # 動態計算尚未走完的 nodeStates 與 edgeStates
             node_states = []
@@ -425,7 +459,7 @@ class Vda5050Bridge(Node):
                 },
                 'velocity': {
                     'vx': float(internal_state.get('linear_velocity', 0.0)),
-                    'omega': 0.0
+                    'omega': float(internal_state.get('angular_velocity', 0.0))
                 },
                 'actionStates': self.action_states,
                 'batteryState': {

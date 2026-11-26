@@ -36,11 +36,19 @@ class SimulatorSupervisorNode(Node):
         self.declare_parameter('mqtt_port', default_mqtt_port)
         self.declare_parameter('manufacturer', 'agv-lab')
         self.declare_parameter('rcs_agv_api_url', default_rcs_api)
+        self.declare_parameter('max_speed', 1.5)
+        self.declare_parameter('acceleration', 0.8)
+        self.declare_parameter('deceleration', 1.0)
+        self.declare_parameter('angular_speed', 1.8)
 
         self.mqtt_broker = self.get_parameter('mqtt_broker').get_parameter_value().string_value
         self.mqtt_port = self.get_parameter('mqtt_port').get_parameter_value().integer_value
         self.manufacturer = self.get_parameter('manufacturer').get_parameter_value().string_value
         self.rcs_agv_api_url = self.get_parameter('rcs_agv_api_url').get_parameter_value().string_value
+        self.max_speed = self.get_parameter('max_speed').get_parameter_value().double_value
+        self.acceleration = self.get_parameter('acceleration').get_parameter_value().double_value
+        self.deceleration = self.get_parameter('deceleration').get_parameter_value().double_value
+        self.angular_speed = self.get_parameter('angular_speed').get_parameter_value().double_value
 
         self.control_topic = 'sim/fleet/control'
         self.snapshot_topic = 'sim/fleet/snapshot'
@@ -199,6 +207,10 @@ class SimulatorSupervisorNode(Node):
             Parameter('init_y', value=float(y)),
             Parameter('init_yaw', value=float(theta)),
             Parameter('init_node_id', value=point_id),
+            Parameter('max_speed', value=float(self.max_speed)),
+            Parameter('acceleration', value=float(self.acceleration)),
+            Parameter('deceleration', value=float(self.deceleration)),
+            Parameter('angular_speed', value=float(self.angular_speed)),
         ]
         bridge_params = [
             Parameter('robot_id', value=agv_id),
@@ -206,6 +218,7 @@ class SimulatorSupervisorNode(Node):
             Parameter('mqtt_broker', value=self.mqtt_broker),
             Parameter('mqtt_port', value=int(self.mqtt_port)),
             Parameter('init_map_id', value=map_id),
+            Parameter('default_max_speed', value=float(self.max_speed)),
         ]
 
         virtual_node = VirtualAGV(

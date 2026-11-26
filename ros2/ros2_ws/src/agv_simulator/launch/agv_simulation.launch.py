@@ -20,6 +20,10 @@ def generate_launch_description():
             default_value='http://java21:8080/api/agvs',
             description='RCS 車輛清單 REST API (啟動時保底同步使用)'
         ),
+        DeclareLaunchArgument('max_speed', default_value='1.5', description='車輛最大線速度 (m/s)'),
+        DeclareLaunchArgument('acceleration', default_value='0.8', description='最大加速度 (m/s^2)'),
+        DeclareLaunchArgument('deceleration', default_value='1.0', description='最大減速度 (m/s^2)'),
+        DeclareLaunchArgument('angular_speed', default_value='1.8', description='最大原地轉向角速度 (rad/s)'),
     ]
 
     sim_supervisor_node = Node(
@@ -31,6 +35,10 @@ def generate_launch_description():
             'mqtt_broker': LaunchConfiguration('mqtt_broker'),
             'mqtt_port': ParameterValue(LaunchConfiguration('mqtt_port'), value_type=int),
             'rcs_agv_api_url': LaunchConfiguration('rcs_agv_api_url'),
+            'max_speed': ParameterValue(LaunchConfiguration('max_speed'), value_type=float),
+            'acceleration': ParameterValue(LaunchConfiguration('acceleration'), value_type=float),
+            'deceleration': ParameterValue(LaunchConfiguration('deceleration'), value_type=float),
+            'angular_speed': ParameterValue(LaunchConfiguration('angular_speed'), value_type=float),
         }],
         output='screen'
     )
