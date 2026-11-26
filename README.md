@@ -20,6 +20,12 @@
 
 
 
+
+https://github.com/user-attachments/assets/c2291fd4-b2c5-4cb7-b39a-9f7fb1a64d9f
+
+
+
+
 ---
 
 ## 3. Getting Started（快速安裝與啟動）
