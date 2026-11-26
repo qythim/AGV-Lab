@@ -182,6 +182,14 @@ public class AgvService {
         eventPublisher.publishEvent(new SimFleetSyncEvent("SNAPSHOT", "", "", "", 0.0, 0.0, 0.0, snapshot));
     }
 
+    /**
+     * 供外部服務 (如 TaskService) 於車輛抵達新節點或取消任務後呼叫，
+     * 於交易提交後即時刷新 MQTT 保留主題 sim/fleet/snapshot，避免 ROS 2 重啟時載入過期座標。
+     */
+    public void publishFleetSnapshotAfterCommit() {
+        publishFleetSyncAfterCommit("SNAPSHOT", "", "", "", 0.0, 0.0, 0.0);
+    }
+
     private void publishFleetSyncAfterCommit(String action, String agvId, String mapId,
                                              String pointId, double x, double y, double thetaRad) {
         List<SimAgvItem> snapshot = buildPlacedFleetSnapshot();

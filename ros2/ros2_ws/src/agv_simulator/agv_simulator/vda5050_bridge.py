@@ -34,7 +34,7 @@ class Vda5050Bridge(Node):
         self.declare_parameter('mqtt_port', default_mqtt_port)
         self.declare_parameter('init_map_id', '')
         self.declare_parameter('default_max_speed', 1.0)
-        self.declare_parameter('state_publish_rate', 5.0)
+        self.declare_parameter('state_publish_rate', 20.0)
 
         self.serial_number = self.get_parameter('robot_id').get_parameter_value().string_value
         self.manufacturer = self.get_parameter('manufacturer').get_parameter_value().string_value
@@ -50,7 +50,7 @@ class Vda5050Bridge(Node):
         self.header_id = 0
         self.connection_header_id = 0
 
-        # MQTT State 節流追蹤：行駛中以 5Hz (200ms) 發送、待機時 1Hz，但節點/狀態/訂單變動時 0ms 立即發送
+        # MQTT State 節流追蹤：行駛中以 20Hz (50ms) 順暢發送、待機時降頻至 1Hz，節點/狀態/訂單變動時 0ms 立即發送
         self.last_state_publish_time = 0.0
         self.last_published_node_id = None
         self.last_published_status = None
@@ -383,7 +383,8 @@ class Vda5050Bridge(Node):
     def on_ros_state_received(self, msg):
         """
         接收來自 virtual_agv 的 20Hz 內部狀態：
-        • 一般位移狀態依 state_publish_rate (預設 5Hz / 200ms，待機時 1Hz) 節流發佈至 MQTT
+        • 行駛中依 state_publish_rate (預設 20Hz / 50ms) 發佈至 MQTT，待機時降頻為 1Hz
+        • 扣除 5ms 計時器抖動容差，避免 50ms 週期因微小誤差發生跳幀
         • 若發生重要事件 (切換節點 lastNodeId、狀態改變、訂單或 orderUpdateId 變更) 則 0ms 立即發佈
         """
         try:
@@ -406,7 +407,8 @@ class Vda5050Bridge(Node):
                 or order_id != self.last_published_order_id
                 or order_update_id != self.last_published_update_id
             )
-            min_interval = (1.0 / self.state_publish_rate) if status == 'MOVING' else 1.0
+            # 扣除 5ms 抖動容差，確保 20Hz 物理迴圈不會因計時微差 (如 49.2ms) 被誤判跳幀
+            min_interval = max(0.0, (1.0 / self.state_publish_rate) - 0.005) if status == 'MOVING' else 1.0
             if not important_change and (now - self.last_state_publish_time) < min_interval:
                 return
 

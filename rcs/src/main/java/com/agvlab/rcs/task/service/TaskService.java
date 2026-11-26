@@ -3,6 +3,7 @@ package com.agvlab.rcs.task.service;
 import com.agvlab.rcs.agv.entity.RcsAgv;
 import com.agvlab.rcs.agv.event.AgvAvailableEvent;
 import com.agvlab.rcs.agv.repository.RcsAgvRepository;
+import com.agvlab.rcs.agv.service.AgvService;
 import com.agvlab.rcs.map.dto.MapDataDto.PointDto;
 import com.agvlab.rcs.map.service.MapGraph;
 import com.agvlab.rcs.map.service.MapService;
@@ -75,6 +76,7 @@ public class TaskService {
     private final RcsTaskRepository rcsTaskRepository;
     private final RcsTaskDetailRepository rcsTaskDetailRepository;
     private final RcsAgvRepository rcsAgvRepository;
+    private final AgvService agvService;
     private final MapService mapService;
     private final FindPathService findPathService;
     private final TrafficManagerService trafficManagerService;
@@ -84,6 +86,7 @@ public class TaskService {
     public TaskService(RcsTaskRepository rcsTaskRepository,
                        RcsTaskDetailRepository rcsTaskDetailRepository,
                        RcsAgvRepository rcsAgvRepository,
+                       AgvService agvService,
                        MapService mapService,
                        FindPathService findPathService,
                        TrafficManagerService trafficManagerService,
@@ -92,6 +95,7 @@ public class TaskService {
         this.rcsTaskRepository = rcsTaskRepository;
         this.rcsTaskDetailRepository = rcsTaskDetailRepository;
         this.rcsAgvRepository = rcsAgvRepository;
+        this.agvService = agvService;
         this.mapService = mapService;
         this.findPathService = findPathService;
         this.trafficManagerService = trafficManagerService;
@@ -216,14 +220,30 @@ public class TaskService {
 
         if ("RUNNING".equals(task.getStatus()) && task.getAgvCode() != null) {
             String agvCode = task.getAgvCode();
+            String lastKnownPoint = trafficManagerService.getLastPoint(agvCode);
             trafficManagerService.cancelNavigation(agvCode);
             rcsAgvRepository.findById(agvCode).ifPresent(agv -> {
+                // 取消任務前先同步車輛最後回報點位與座標至資料庫，防止模擬器重啟後位置錯位
+                if (lastKnownPoint != null && !lastKnownPoint.isBlank()) {
+                    agv.setCurrentPoint(lastKnownPoint);
+                    if (agv.getCurrentMapCode() != null) {
+                        try {
+                            MapGraph graph = mapService.getGraph(agv.getCurrentMapCode());
+                            PointDto pt = graph.nodeByCode().get(lastKnownPoint);
+                            if (pt != null) {
+                                agv.setPosX(pt.x());
+                                agv.setPosY(pt.y());
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
                 if (agv.getCurrentPoint() != null) {
                     reservationService.releaseExceptOccupied(agvCode, agv.getCurrentPoint());
                 }
                 agv.setStatus("IDLE");
                 agv.setCurrentTaskId(null);
                 rcsAgvRepository.saveAndFlush(agv);
+                agvService.publishFleetSnapshotAfterCommit();
             });
         }
 
@@ -311,6 +331,7 @@ public class TaskService {
                 agv.setStatus("IDLE");
                 agv.setCurrentTaskId(null);
                 rcsAgvRepository.saveAndFlush(agv);
+                agvService.publishFleetSnapshotAfterCommit();
                 triggerDispatchAfterCommit();
             }
             return null;
@@ -321,6 +342,8 @@ public class TaskService {
             OffsetDateTime now = OffsetDateTime.now();
             if (agv != null) {
                 rcsAgvRepository.saveAndFlush(agv);
+                // 抵達取貨點後同步刷新 MQTT 保留快照，確保模擬器重啟時位置一致
+                agvService.publishFleetSnapshotAfterCommit();
             }
 
             // 更新第一階段明細為 COMPLETED
@@ -395,6 +418,8 @@ public class TaskService {
             agv.setStatus("IDLE");
             agv.setCurrentTaskId(null);
             rcsAgvRepository.saveAndFlush(agv);
+            // 任務完成後立即刷新 MQTT 保留快照 sim/fleet/snapshot，確保與資料庫位置 100% 同步
+            agvService.publishFleetSnapshotAfterCommit();
         }
 
         log.info("任務 [{}] 已由車輛 [{}] 順利完成，最終位置: [{}]", task.getTaskCode(), agvCode, arrivedPoint);

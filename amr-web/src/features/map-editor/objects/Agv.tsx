@@ -85,7 +85,8 @@ export default function Agv({
       return
     }
 
-    const alpha = Math.min(1, 1 - Math.exp(-15 * delta))
+    // 配合 ROS 2 20Hz (50ms) 狀態更新，使用平滑追蹤係數避免高速插值產生頓挫感
+    const alpha = Math.min(1, 1 - Math.exp(-12 * delta))
     group.position.x = THREE.MathUtils.lerp(group.position.x, targetX, alpha)
     group.position.z = THREE.MathUtils.lerp(group.position.z, targetZ, alpha)
     group.rotation.y = lerpAngle(group.rotation.y, targetRotY, alpha)
