@@ -26,6 +26,7 @@ export interface AgvPoseMessage {
   posX: number
   posY: number
   angle: number
+  speed?: number
   status: string
   currentPoint: string
 }

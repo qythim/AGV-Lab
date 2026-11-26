@@ -18,6 +18,7 @@ export interface AgvLivePose {
   posX: number
   posY: number
   angle: number
+  speed: number
   status: string
   currentPoint: string | null
   currentMapCode: string | null
@@ -56,6 +57,7 @@ export function useAgvRealtime(mapCode?: string): UseAgvRealtimeResult {
               posX: agv.posX,
               posY: agv.posY,
               angle: agv.angle ?? 0,
+              speed: 0,
               status: agv.status,
               currentPoint: agv.currentPoint,
               currentMapCode: agv.currentMapCode,
@@ -89,6 +91,7 @@ export function useAgvRealtime(mapCode?: string): UseAgvRealtimeResult {
               posX: existingPose?.currentMapCode === agv.currentMapCode ? existingPose.posX : agv.posX,
               posY: existingPose?.currentMapCode === agv.currentMapCode ? existingPose.posY : agv.posY,
               angle: existingPose?.currentMapCode === agv.currentMapCode ? existingPose.angle : (agv.angle ?? 0),
+              speed: existingPose?.currentMapCode === agv.currentMapCode ? existingPose.speed : 0,
               status: existingPose?.status ?? agv.status,
               currentPoint: existingPose?.currentPoint ?? agv.currentPoint,
               currentMapCode: agv.currentMapCode,
@@ -108,6 +111,7 @@ export function useAgvRealtime(mapCode?: string): UseAgvRealtimeResult {
           posX: msg.posX,
           posY: msg.posY,
           angle: msg.angle,
+          speed: msg.speed ?? 0,
           status: msg.status,
           currentPoint: msg.currentPoint,
           currentMapCode: msg.currentMapCode,

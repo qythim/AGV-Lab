@@ -8,6 +8,7 @@
 import { useRef } from 'react'
 import type { RefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
+import { Html } from '@react-three/drei'
 import * as THREE from 'three'
 import type { AgvLivePose } from '../hooks/useAgvRealtime'
 
@@ -52,13 +53,21 @@ export default function Agv({
   poseMapRef,
 }: AgvProps) {
   const groupRef = useRef<THREE.Group>(null)
+  const speedTextRef = useRef<HTMLSpanElement>(null)
+  const lastDisplayedSpeedRef = useRef<string>('0.00')
   const beaconColor = STATUS_COLORS[status as AgvStatus] ?? STATUS_COLORS.OFFLINE
 
-  // 60fps 位置與角度線性插值 (Position & Rotation Interpolation)
+  // 60fps 位置與角度線性插值，並直接透過 DOM Ref 更新即時車速文字 (零 React 重繪)
   useFrame((_, delta) => {
     const group = groupRef.current
     const livePose = poseMapRef?.current.get(agvCode)
     if (!group || !livePose) return
+
+    const formattedSpeed = (livePose.speed ?? 0).toFixed(2)
+    if (speedTextRef.current && formattedSpeed !== lastDisplayedSpeedRef.current) {
+      lastDisplayedSpeedRef.current = formattedSpeed
+      speedTextRef.current.textContent = `${formattedSpeed} m/s`
+    }
 
     const targetX = livePose.posX
     const targetZ = livePose.posY
@@ -169,6 +178,33 @@ export default function Agv({
         distance={2.5}
         position={[-0.6, 0.65, 0]}
       />
+
+      {/* ── 6. 懸浮車輛編號與即時速度標籤 (透過 Ref 更新，不觸發 React 重繪) ── */}
+      <Html
+        position={[0, 0.9, 0]}
+        center
+        distanceFactor={12}
+        style={{ pointerEvents: 'none', userSelect: 'none' }}
+      >
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            background: 'rgba(5, 16, 43, 0.88)',
+            border: `1px solid ${beaconColor}`,
+            borderRadius: 999,
+            padding: '2px 8px',
+            fontFamily: 'monospace',
+            fontSize: 11,
+            whiteSpace: 'nowrap',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.45)',
+          }}
+        >
+          <span style={{ color: '#f8fafc', fontWeight: 700 }}>{agvCode}</span>
+          <span ref={speedTextRef} style={{ color: '#38bdf8', fontWeight: 600 }}>0.00 m/s</span>
+        </div>
+      </Html>
     </group>
   )
 }
