@@ -24,7 +24,6 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
   const [codeInput, setCodeInput] = useState('')
   const [nameInput, setNameInput] = useState('')
   const [filters, setFilters] = useState({ code: '', name: '' })
-  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [section, setSection] = useState<'maps' | 'agvs'>('maps')
 
   const loadMaps = useCallback(async () => {
@@ -50,14 +49,12 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
 
   const handleSearch = () => {
     setFilters({ code: codeInput.trim(), name: nameInput.trim() })
-    setSelectedRowKeys([])
   }
 
   const handleReset = () => {
     setCodeInput('')
     setNameInput('')
     setFilters({ code: '', name: '' })
-    setSelectedRowKeys([])
   }
 
   const handleActivate = (record: MapDataDto) => {
@@ -140,11 +137,8 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
           </nav>
           <div className="map-management-header-right">
             {activeMap && <span className="map-management-active">啟用地圖：{activeMap.map.mapName}</span>}
-            <Button icon={<ReloadOutlined />} onClick={() => void loadMaps()}>重新整理</Button>
           </div>
         </header>
-
-        <div className="map-management-breadcrumb">首頁 <span>/</span> 地圖管理 <span>/</span> {section === 'maps' ? '地圖清單' : 'AGV 管理'}</div>
 
         <main className="map-management-content">
           {section === 'maps' ? (
@@ -161,16 +155,14 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
             </form>
 
             <div className="map-management-toolbar">
-              <Upload accept=".json,application/json" showUploadList={false} beforeUpload={handleImport}>
-                <Button icon={<ImportOutlined />}>匯入地圖</Button>
-              </Upload>
+              <Space>
+                <Upload accept=".json,application/json" showUploadList={false} beforeUpload={handleImport}>
+                  <Button icon={<ImportOutlined />}>匯入地圖</Button>
+                </Upload>
+                {/* 地圖清單專屬重新整理按鈕，避免與 AGV 管理分頁混淆 */}
+                <Button icon={<ReloadOutlined />} onClick={() => void loadMaps()}>重新整理</Button>
+              </Space>
               <span>共 {filteredMaps.length} 筆地圖</span>
-            </div>
-
-            <div className="map-management-selection">
-              <span className="map-management-info-icon">i</span>
-              已選擇 <strong>{selectedRowKeys.length}</strong> 項
-              {selectedRowKeys.length > 0 && <Button type="link" size="small" onClick={() => setSelectedRowKeys([])}>清空</Button>}
             </div>
 
             <Table<MapDataDto>
@@ -178,7 +170,6 @@ export default function MapManagementPage({ onOpenViewer, onOpenEditor }: MapMan
               dataSource={filteredMaps}
               columns={columns}
               rowKey={record => record.map.mapCode}
-              rowSelection={{ selectedRowKeys, onChange: keys => setSelectedRowKeys(keys) }}
               loading={loading}
               locale={{ emptyText: loadError ?? '目前沒有地圖資料' }}
               pagination={{ pageSize: 10, showSizeChanger: true, showTotal: total => `共 ${total} 筆結果` }}
