@@ -1,0 +1,5 @@
+# 排除本機相依套件與編譯產物
+node_modules/
+dist/
+.vscode/
+*.log

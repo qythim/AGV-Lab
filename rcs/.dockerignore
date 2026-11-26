@@ -1,0 +1,7 @@
+# 排除本機編譯產物與暫存檔
+target/
+logs/
+map_storage/
+.idea/
+.vscode/
+*.log
