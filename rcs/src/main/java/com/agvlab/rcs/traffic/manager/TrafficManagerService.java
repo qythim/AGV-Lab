@@ -36,7 +36,7 @@ public class TrafficManagerService {
     private static final Logger log = LoggerFactory.getLogger(TrafficManagerService.class);
 
     // 預設滑動視窗大小與交通檢查節流間隔 (毫秒)
-    private static final int DEFAULT_WINDOW_SIZE = 2;
+    private static final int DEFAULT_WINDOW_SIZE = 4;
     private static final long CHECK_INTERVAL_MS = 500;
 
     // 車輛執行中路徑與狀態快取
@@ -210,8 +210,17 @@ public class TrafficManagerService {
                 long orderUpdateId = activeOrderUpdateIdMap.compute(
                         agvCode, (k, v) -> (v == null) ? 0L : (v + 1L)
                 );
-                vda5050MqttService.sendOrder(agvCode, orderId, orderUpdateId, route);
-                lastSentPointsMap.put(agvCode, List.copyOf(res.holdingPoints()));
+                boolean sent = vda5050MqttService.sendOrder(agvCode, orderId, orderUpdateId, route);
+                if (sent) {
+                    lastSentPointsMap.put(agvCode, List.copyOf(res.holdingPoints()));
+                } else {
+                    // 若發送失敗 (例如 MQTT 瞬斷重連中)，回退 orderUpdateId 並保留待發狀態供下一週期自動重試
+                    if (orderUpdateId == 0L) {
+                        activeOrderUpdateIdMap.remove(agvCode);
+                    } else {
+                        activeOrderUpdateIdMap.put(agvCode, orderUpdateId - 1L);
+                    }
+                }
             }
         } else if (res.blockPoint() != null) {
             Boolean added = redisService.enqueueWait(agvCode, res.blockPoint());

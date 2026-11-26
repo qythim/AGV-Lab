@@ -41,8 +41,8 @@ public class Vda5050MqttService implements MqttCallbackExtended {
 
     private static final Logger log = LoggerFactory.getLogger(Vda5050MqttService.class);
 
-    // 用於比對座標或狀態是否發生變化 (Delta Update)
-    private record AgvPoseSnapshot(String mapCode, double x, double y, double angle, String status, String currentPoint) {}
+    // 用於比對座標、速度或狀態是否發生變化 (Delta Update)
+    private record AgvPoseSnapshot(String mapCode, double x, double y, double angle, double speed, String status, String currentPoint) {}
     private final Map<String, AgvPoseSnapshot> lastBroadcastPoseMap = new ConcurrentHashMap<>();
     private final AtomicLong orderHeaderId = new AtomicLong(0);
     private final AtomicLong instantActionHeaderId = new AtomicLong(0);
@@ -65,7 +65,8 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     @Value("${mqtt.client.id:rcs_backend_client}")
     private String clientId;
 
-    private MqttClient mqttClient;
+    // 使用非阻塞 MqttAsyncClient，避免於 messageArrived 回調執行緒中同步等待 QoS 1 PUBACK 造成 Paho 死鎖 (32000)
+    private MqttAsyncClient mqttClient;
 
     // VDA 5050 通配符訂閱主題：監聽 agv-lab 旗下所有車輛的狀態與連線生命週期
     private static final String STATE_TOPIC_WILDCARD = "uagv/v2/agv-lab/+/state";
@@ -79,8 +80,8 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     @PostConstruct
     public void init() {
         try {
-            log.info("正在初始化 MQTT 連線至 Broker: {}, ClientID: {}", brokerUrl, clientId);
-            this.mqttClient = new MqttClient(brokerUrl, clientId, new MemoryPersistence());
+            log.info("正在初始化 MQTT 非阻塞連線至 Broker: {}, ClientID: {}", brokerUrl, clientId);
+            this.mqttClient = new MqttAsyncClient(brokerUrl, clientId, new MemoryPersistence());
             this.mqttClient.setCallback(this);
 
             MqttConnectOptions options = new MqttConnectOptions();
@@ -88,8 +89,9 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             options.setCleanSession(true);
             options.setConnectionTimeout(10);
             options.setKeepAliveInterval(30);
+            options.setMaxInflight(100); // 提高並發未確認封包上限，支援多車高頻調度
 
-            this.mqttClient.connect(options);
+            this.mqttClient.connect(options).waitForCompletion(10000);
             log.info("MQTT Broker 連線成功！");
 
         } catch (MqttException e) {
@@ -156,11 +158,12 @@ public class Vda5050MqttService implements MqttCallbackExtended {
         double x = root.path("agvPosition").path("x").asDouble();
         double y = root.path("agvPosition").path("y").asDouble();
         double theta = root.path("agvPosition").path("theta").asDouble();
+        double vx = root.path("velocity").path("vx").asDouble();
 
         if (agvCode.isEmpty()) return;
 
-        // 1. 即時推送位置變化至前端 WebSocket (Delta Update，不查詢 Redis)
-        broadcastPoseIfChanged(mapCode, agvCode, currentPoint, driving, x, y, theta);
+        // 1. 即時推送位置與速度變化至前端 WebSocket (Delta Update，不查詢 Redis)
+        broadcastPoseIfChanged(mapCode, agvCode, currentPoint, driving, x, y, theta, vx);
 
         // 2. 發布狀態回報事件，交由 TrafficManagerService 處理交通申請與排隊調度
         eventPublisher.publishEvent(new AgvStateReportEvent(mapCode, agvCode, currentPoint));
@@ -179,9 +182,13 @@ public class Vda5050MqttService implements MqttCallbackExtended {
      * @param orderUpdateId 訂單展延序號 (新訂單自 0 起算，滑動視窗每次遞增 1)
      * @param route         由 MapGraph 解析完成之點位與邊資料
      */
-    public void sendOrder(String agvCode, String orderId, long orderUpdateId, MapGraph.ResolvedPath route) {
+    public boolean sendOrder(String agvCode, String orderId, long orderUpdateId, MapGraph.ResolvedPath route) {
         if (route == null || route.nodes().isEmpty()) {
-            return;
+            return false;
+        }
+        if (this.mqttClient == null || !this.mqttClient.isConnected()) {
+            log.warn("MQTT 尚未就緒，暫緩向車輛 [{}] 發送訂單 [{} (updateId={})]", agvCode, orderId, orderUpdateId);
+            return false;
         }
 
         try {
@@ -232,20 +239,23 @@ public class Vda5050MqttService implements MqttCallbackExtended {
             String orderTopic = String.format("uagv/v2/agv-lab/%s/order", agvCode);
             MqttMessage message = new MqttMessage(orderJson.getBytes());
             message.setQos(1);
+            // 非阻塞發佈：立即返回 IMqttDeliveryToken，不阻塞 Paho 回調執行緒
             this.mqttClient.publish(orderTopic, message);
 
             log.info("已向車輛 [{}] 發送訂單 [{} (updateId={})]: {}", agvCode, orderId, orderUpdateId, orderJson);
+            return true;
 
         } catch (Exception e) {
             log.error("向車輛 [{}] 發送訂單時失敗: {}", agvCode, e.getMessage(), e);
+            return false;
         }
     }
 
     /**
      * 向下相容方法：未指定 orderUpdateId 時預設為 0
      */
-    public void sendOrder(String agvCode, String orderId, MapGraph.ResolvedPath route) {
-        sendOrder(agvCode, orderId, 0L, route);
+    public boolean sendOrder(String agvCode, String orderId, MapGraph.ResolvedPath route) {
+        return sendOrder(agvCode, orderId, 0L, route);
     }
 
     /**
@@ -371,7 +381,7 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     public void destroy() {
         try {
             if (this.mqttClient != null && this.mqttClient.isConnected()) {
-                this.mqttClient.disconnect();
+                this.mqttClient.disconnect().waitForCompletion(2000);
                 this.mqttClient.close();
                 log.info("MQTT 連線已安全釋放");
             }
@@ -381,12 +391,13 @@ public class Vda5050MqttService implements MqttCallbackExtended {
     }
 
     private void broadcastPoseIfChanged(String mapCode, String agvCode, String currentPoint,
-                                        boolean driving, double x, double y, double theta) {
+                                        boolean driving, double x, double y, double theta, double vx) {
         double angle = Math.toDegrees(theta);
+        double speed = Math.round(vx * 100.0) / 100.0;
         String status = driving ? "RUNNING" : "IDLE";
-        AgvPoseSnapshot current = new AgvPoseSnapshot(mapCode, x, y, angle, status, currentPoint);
+        AgvPoseSnapshot current = new AgvPoseSnapshot(mapCode, x, y, angle, speed, status, currentPoint);
 
-        // 若座標與狀態皆未變動則不重複推送，減少網路與前端渲染負荷
+        // 若座標、速度與狀態皆未變動則不重複推送，減少網路與前端渲染負荷
         if (current.equals(lastBroadcastPoseMap.get(agvCode))) {
             return;
         }
@@ -400,6 +411,7 @@ public class Vda5050MqttService implements MqttCallbackExtended {
                     "posX", x,
                     "posY", y,
                     "angle", angle,
+                    "speed", speed,
                     "status", status,
                     "currentPoint", currentPoint
             );
